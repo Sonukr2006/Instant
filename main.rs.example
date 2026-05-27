@@ -1,0 +1,98 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+use tauri::{
+    GlobalShortcutManager, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Position,
+    Size, WindowEvent,
+};
+use tauri_plugin_global_shortcut::{GlobalShortcut, GlobalShortcutExt};
+
+#[tauri::command]
+fn greet(name: &str) -> String {
+    format!("Hello, {}! You've been greeted from Rust!", name)
+}
+
+#[tauri::command]
+fn toggle_overlay(app: tauri::AppHandle) -> Result<(), String> {
+    let windows = app.webview_windows();
+
+    for (_, window) in windows.iter() {
+        if window.label() == "overlay" {
+            let is_visible = window
+                .is_visible()
+                .map_err(|e| format!("Failed to check visibility: {}", e))?;
+
+            if is_visible {
+                window
+                    .hide()
+                    .map_err(|e| format!("Failed to hide window: {}", e))?;
+            } else {
+                window
+                    .show()
+                    .map_err(|e| format!("Failed to show window: {}", e))?;
+                window
+                    .set_focus()
+                    .map_err(|e| format!("Failed to set focus: {}", e))?;
+
+                // Center window on screen
+                if let Ok(monitor) = window.current_monitor() {
+                    if let Some(monitor_data) = monitor {
+                        let window_size = PhysicalSize {
+                            width: 600,
+                            height: 400,
+                        };
+                        let x = (monitor_data.size.width as i32 - 600) / 2 + monitor_data.position.x;
+                        let y = (monitor_data.size.height as i32 - 400) / 2 + monitor_data.position.y;
+
+                        let _ = window.set_position(Position::Physical(PhysicalPosition::new(x, y)));
+                    }
+                }
+            }
+            return Ok(());
+        }
+    }
+
+    Err("Overlay window not found".to_string())
+}
+
+fn setup_global_shortcuts(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let app_handle = app.handle().clone();
+
+    app.handle()
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .map_err(|e| format!("Failed to initialize global shortcut plugin: {}", e))?;
+
+    let global_shortcut = app.handle().global_shortcut();
+
+    global_shortcut
+        .register("ctrl+shift+space", move || {
+            let app_handle = app_handle.clone();
+            if let Err(e) = toggle_overlay(app_handle) {
+                eprintln!("Error toggling overlay: {}", e);
+            }
+        })
+        .map_err(|e| format!("Failed to register global shortcut: {}", e).into())
+}
+
+fn main() {
+    tauri::Builder::default()
+        .setup(|app| {
+            // Initialize global shortcuts with error handling
+            if let Err(e) = setup_global_shortcuts(app) {
+                eprintln!("Failed to setup global shortcuts: {}", e);
+                // Don't panic - allow app to continue without shortcuts
+            }
+
+            Ok(())
+        })
+        .on_window_event(|_window, event| {
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close();
+                }
+                _ => {}
+            }
+        })
+        .invoke_handler(tauri::generate_handler![greet, toggle_overlay])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}

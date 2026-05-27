@@ -1,0 +1,50 @@
+{
+  "$schema": "../../../node_modules/@tauri-apps/cli/schema.json",
+  "identifier": "default",
+  "description": "Default capability set for Instant AI Context",
+  "windows": ["main", "overlay"],
+  "webApi": {
+    "all": false,
+    "assetScope": {
+      "allow": ["$APP/", "asset:///**"]
+    }
+  },
+  "permissions": [
+    "core:app:allow-app-hide",
+    "core:app:allow-app-show",
+    "core:app:allow-set-focus",
+    "core:app:allow-version",
+    "core:event:allow-emit",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:path:allow-resolve",
+    "core:path:allow-normalize",
+    "core:path:allow-join",
+    "core:path:allow-dirname",
+    "core:path:allow-basename",
+    "core:path:allow-extname",
+    "core:process:allow-exit",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-set-decorations",
+    "core:window:allow-center",
+    "core:window:allow-close",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-resizable",
+    "core:window:allow-set-size",
+    "core:window:allow-set-position",
+    "core:window:allow-set-title",
+    "core:window:allow-set-skip-taskbar",
+    "core:window:allow-set-visible",
+    "core:window:allow-get-position",
+    "core:window:allow-get-size",
+    "core:window:allow-get-current-window",
+    "core:window:allow-get-all-windows",
+    "core:window:allow-set-content-protected",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-is-registered",
+    "global-shortcut:allow-unregister",
+    "global-shortcut:allow-unregister-all"
+  ]
+}

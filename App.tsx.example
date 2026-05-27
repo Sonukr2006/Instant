@@ -1,0 +1,80 @@
+import { useState, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import "./App.css";
+
+interface GreetMessage {
+  message: string;
+}
+
+function App() {
+  const [greetMsg, setGreetMsg] = useState<GreetMessage | null>(null);
+  const [name, setName] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+
+  async function greet() {
+    setIsLoading(true);
+    try {
+      const result = await invoke<string>("greet", { name: name || "User" });
+      setGreetMsg({ message: result });
+    } catch (error) {
+      console.error("Error calling greet:", error);
+      setGreetMsg({ message: "Error: Failed to greet" });
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function closeOverlay() {
+    try {
+      await invoke("toggle_overlay");
+    } catch (error) {
+      console.error("Error closing overlay:", error);
+    }
+  }
+
+  useEffect(() => {
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeOverlay();
+      }
+    };
+
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, []);
+
+  return (
+    <div className="overlay-container">
+      <div className="overlay-header">
+        <h1>Instant AI Context</h1>
+        <button className="close-btn" onClick={closeOverlay}>
+          ✕
+        </button>
+      </div>
+
+      <div className="overlay-content">
+        <input
+          id="greet-input"
+          onChange={(e) => setName(e.currentTarget.value)}
+          placeholder="Enter a name..."
+          onKeyPress={(e) => {
+            if (e.key === "Enter") greet();
+          }}
+        />
+        <button onClick={greet} disabled={isLoading}>
+          {isLoading ? "Loading..." : "Greet"}
+        </button>
+
+        {greetMsg && (
+          <p className="greet-message">{greetMsg.message}</p>
+        )}
+      </div>
+
+      <div className="overlay-footer">
+        <p>Press Ctrl+Shift+Space to toggle • ESC to close</p>
+      </div>
+    </div>
+  );
+}
+
+export default App;
