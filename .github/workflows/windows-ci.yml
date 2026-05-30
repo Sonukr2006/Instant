@@ -1,0 +1,85 @@
+name: Windows CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  windows-checks:
+    name: Windows desktop and backend checks
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: instant/package-lock.json
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            instant/src-tauri/target
+            backend/target
+          key: windows-cargo-${{ hashFiles('instant/src-tauri/Cargo.lock', 'backend/Cargo.lock') }}
+          restore-keys: |
+            windows-cargo-
+
+      - name: Install frontend dependencies
+        working-directory: instant
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: instant
+        run: npm run build
+
+      - name: Check desktop formatting
+        working-directory: instant/src-tauri
+        run: cargo fmt --all -- --check
+
+      - name: Test desktop debug build
+        working-directory: instant/src-tauri
+        run: cargo test --locked
+
+      - name: Clippy desktop debug build
+        working-directory: instant/src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Check desktop release build
+        working-directory: instant/src-tauri
+        run: cargo check --locked --release
+
+      - name: Check backend formatting
+        working-directory: backend
+        run: cargo fmt --all -- --check
+
+      - name: Test backend
+        working-directory: backend
+        run: cargo test --locked
+
+      - name: Clippy backend
+        working-directory: backend
+        run: cargo clippy --locked --all-targets -- -D warnings

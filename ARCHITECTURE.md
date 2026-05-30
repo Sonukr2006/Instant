@@ -159,9 +159,9 @@ User presses Ctrl+Shift+Space
 **Why**: No intrusive window on boot, responds only to hotkey
 **Benefit**: Zero distraction, always available
 
-### 5. No Network Dependencies
-**Why**: Faster startup, smaller binary, fewer security concerns
-**How**: All logic runs locally
+### 5. Backend-Only AI In Production
+**Why**: Public builds must not expose Gemini/OpenAI API keys inside the desktop app.
+**How**: Production mode requires the Instant backend and a saved login session. Local/BYOK Gemini fallback is allowed only for development or private testing.
 
 ### 6. Single-Purpose Plugin
 **Why**: Tauri v2 plugin system is modular; only `global-shortcut` added
@@ -220,13 +220,14 @@ Tauri v2 requires explicit permission declaration for every feature:
 - Window management: `core:window:*`
 - Global shortcuts: `global-shortcut:*`
 - Filesystem: `core:fs:*` (not enabled by default)
-- Network: Not enabled
+- Network: Webview network access is restricted by CSP. AI network calls are made from Rust through the Instant backend in production mode.
 
 ### Threat Mitigation
 - CSP prevents inline script execution
 - IPC validates all command calls
 - No eval() or dynamic code execution
 - Permissions are granular and auditable
+- Production desktop builds do not require user-managed Gemini/OpenAI API keys
 
 ---
 
