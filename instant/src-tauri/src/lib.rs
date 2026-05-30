@@ -27,6 +27,8 @@ const SELECTED_TEXT_COPY_TIMEOUT: std::time::Duration = std::time::Duration::fro
 #[cfg(target_os = "windows")]
 const SELECTED_TEXT_COPY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
 #[cfg(target_os = "windows")]
+const SHORTCUT_RELEASE_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(120);
+#[cfg(target_os = "windows")]
 const MAX_CLIPBOARD_BACKUP_FORMATS: usize = 64;
 #[cfg(target_os = "windows")]
 const MAX_CLIPBOARD_BACKUP_BYTES: usize = 32 * 1024 * 1024;
@@ -164,6 +166,31 @@ struct ClipboardBackup {
 struct ClipboardFormatBackup {
     format: u32,
     data: Vec<u8>,
+}
+
+#[cfg(target_os = "windows")]
+enum SelectedTextCaptureError {
+    NoSelectedText,
+    Other(String),
+}
+
+#[cfg(target_os = "windows")]
+impl std::fmt::Display for SelectedTextCaptureError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoSelectedText => {
+                formatter.write_str("No selected text was copied after the shortcut.")
+            }
+            Self::Other(error) => formatter.write_str(error),
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl From<String> for SelectedTextCaptureError {
+    fn from(error: String) -> Self {
+        Self::Other(error)
+    }
 }
 
 #[tauri::command]
@@ -702,7 +729,7 @@ fn global_shortcut_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
         .with_shortcuts(["ctrl+shift+space"])
         .expect("failed to configure global shortcut")
         .with_handler(|app, _shortcut, event| {
-            if event.state == ShortcutState::Pressed {
+            if event.state == ShortcutState::Released {
                 if let Err(error) = handle_windows_global_shortcut(app) {
                     log::error!("Failed to toggle overlay from global shortcut: {}", error);
                 }
@@ -745,6 +772,7 @@ fn handle_windows_global_shortcut_inner(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
+    std::thread::sleep(SHORTCUT_RELEASE_SETTLE_DELAY);
     let payload = capture_selected_text_payload();
     show_and_focus_window(&window)?;
     emit_context_payload(app, payload);
@@ -758,6 +786,14 @@ fn capture_selected_text_payload() -> CapturedContextPayload {
         Ok(text) => CapturedContextPayload {
             text: Some(text),
             error: None,
+            source: "selected_text",
+        },
+        Err(SelectedTextCaptureError::NoSelectedText) => CapturedContextPayload {
+            text: None,
+            error: Some(
+                "No selected text was detected. Select text first, then press Ctrl+Shift+Space. For clipboard-only mode, use the tray icon."
+                    .to_string(),
+            ),
             source: "selected_text",
         },
         Err(error) => {
@@ -777,14 +813,14 @@ fn capture_selected_text_payload() -> CapturedContextPayload {
 }
 
 #[cfg(target_os = "windows")]
-fn capture_selected_text_windows() -> Result<String, String> {
+fn capture_selected_text_windows() -> Result<String, SelectedTextCaptureError> {
     let clipboard_backup = backup_clipboard_windows()?;
 
     if clipboard_backup.skipped_formats > 0 {
-        return Err(format!(
+        return Err(SelectedTextCaptureError::Other(format!(
             "Current clipboard has {} unsupported format(s), so selected-text capture was skipped to avoid damaging the user's clipboard.",
             clipboard_backup.skipped_formats
-        ));
+        )));
     }
 
     let sequence_before = clipboard_sequence_number();
@@ -793,7 +829,7 @@ fn capture_selected_text_windows() -> Result<String, String> {
     let clipboard_changed = wait_for_clipboard_change(sequence_before);
 
     if !clipboard_changed {
-        return Err("No selected text was copied after the shortcut.".to_string());
+        return Err(SelectedTextCaptureError::NoSelectedText);
     }
 
     let captured_text = read_clipboard_text();
@@ -802,7 +838,7 @@ fn capture_selected_text_windows() -> Result<String, String> {
         log::warn!("Failed to restore previous clipboard state: {}", error);
     }
 
-    captured_text
+    captured_text.map_err(SelectedTextCaptureError::Other)
 }
 
 #[cfg(target_os = "windows")]
