@@ -27,7 +27,7 @@ log = "0.4"
 
 [target.'cfg(windows)'.dependencies]
 clipboard-win = "5.4"
-windows-sys = { version = "0.61", features = ["Win32_System_DataExchange", "Win32_UI_Input_KeyboardAndMouse"] }
+windows-sys = { version = "0.61", features = ["Win32_Graphics_Gdi", "Win32_System_DataExchange", "Win32_UI_Input_KeyboardAndMouse"] }
 
 [features]
 default = ["custom-protocol"]

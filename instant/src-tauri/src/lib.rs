@@ -165,7 +165,22 @@ struct ClipboardBackup {
 #[cfg(target_os = "windows")]
 struct ClipboardFormatBackup {
     format: u32,
-    data: Vec<u8>,
+    data: ClipboardFormatBackupData,
+}
+
+#[cfg(target_os = "windows")]
+enum ClipboardFormatBackupData {
+    Raw(Vec<u8>),
+    EnhancedMetafile(Vec<u8>),
+}
+
+#[cfg(target_os = "windows")]
+impl ClipboardFormatBackupData {
+    fn len(&self) -> usize {
+        match self {
+            Self::Raw(data) | Self::EnhancedMetafile(data) => data.len(),
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -857,28 +872,24 @@ fn backup_clipboard_windows() -> Result<ClipboardBackup, String> {
             ));
         }
 
-        let Some(format_size) = clipboard_win::raw::size(format) else {
-            skipped_formats += 1;
-            log::warn!(
-                "Skipping clipboard format {} because it is not safely readable.",
-                format
-            );
-            continue;
-        };
-        let format_size = format_size.get();
+        match backup_clipboard_format_windows(format) {
+            Ok(Some(data)) => {
+                if total_bytes.saturating_add(data.len()) > MAX_CLIPBOARD_BACKUP_BYTES {
+                    return Err(format!(
+                        "Current clipboard is larger than {} MB, so selected-text capture was skipped to avoid high memory use.",
+                        MAX_CLIPBOARD_BACKUP_BYTES / 1024 / 1024
+                    ));
+                }
 
-        if total_bytes.saturating_add(format_size) > MAX_CLIPBOARD_BACKUP_BYTES {
-            return Err(format!(
-                "Current clipboard is larger than {} MB, so selected-text capture was skipped to avoid high memory use.",
-                MAX_CLIPBOARD_BACKUP_BYTES / 1024 / 1024
-            ));
-        }
-
-        let mut data = Vec::with_capacity(format_size);
-        match clipboard_win::raw::get_vec(format, &mut data) {
-            Ok(_) => {
                 total_bytes = total_bytes.saturating_add(data.len());
                 formats.push(ClipboardFormatBackup { format, data });
+            }
+            Ok(None) => {
+                skipped_formats += 1;
+                log::warn!(
+                    "Skipping clipboard format {} because it is not safely readable.",
+                    format
+                );
             }
             Err(error) => {
                 skipped_formats += 1;
@@ -899,6 +910,54 @@ fn backup_clipboard_windows() -> Result<ClipboardBackup, String> {
 }
 
 #[cfg(target_os = "windows")]
+fn backup_clipboard_format_windows(
+    format: u32,
+) -> Result<Option<ClipboardFormatBackupData>, String> {
+    if format == clipboard_win::formats::CF_ENHMETAFILE {
+        return backup_enhanced_metafile_windows(format).map(Some);
+    }
+
+    let Some(format_size) = clipboard_win::raw::size(format) else {
+        return Ok(None);
+    };
+    let mut data = Vec::with_capacity(format_size.get());
+
+    clipboard_win::raw::get_vec(format, &mut data)
+        .map(|_| Some(ClipboardFormatBackupData::Raw(data)))
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn backup_enhanced_metafile_windows(format: u32) -> Result<ClipboardFormatBackupData, String> {
+    use windows_sys::Win32::{
+        Graphics::Gdi::{GetEnhMetaFileBits, HENHMETAFILE},
+        System::DataExchange::GetClipboardData,
+    };
+
+    let handle = unsafe { GetClipboardData(format) } as HENHMETAFILE;
+
+    if handle.is_null() {
+        return Err("enhanced metafile handle is unavailable".to_string());
+    }
+
+    let size = unsafe { GetEnhMetaFileBits(handle, 0, std::ptr::null_mut()) };
+
+    if size == 0 {
+        return Err("enhanced metafile size is unavailable".to_string());
+    }
+
+    let mut data = vec![0; size as usize];
+    let copied = unsafe { GetEnhMetaFileBits(handle, size, data.as_mut_ptr()) };
+
+    if copied == 0 {
+        return Err("enhanced metafile backup failed".to_string());
+    }
+
+    data.truncate(copied as usize);
+    Ok(ClipboardFormatBackupData::EnhancedMetafile(data))
+}
+
+#[cfg(target_os = "windows")]
 fn restore_clipboard_windows(backup: ClipboardBackup) -> Result<(), String> {
     let _clipboard = clipboard_win::Clipboard::new_attempts(10)
         .map_err(|error| format!("Unable to access clipboard for restore: {error}"))?;
@@ -910,13 +969,12 @@ fn restore_clipboard_windows(backup: ClipboardBackup) -> Result<(), String> {
     let mut first_error = None;
 
     for item in backup.formats {
-        if let Err(error) = clipboard_win::raw::set_without_clear(item.format, &item.data) {
+        if let Err(error) = restore_clipboard_format_windows(item) {
             failed_formats += 1;
-            let message = format!("format {} restore failed: {error}", item.format);
-            log::warn!("{}", message);
+            log::warn!("{}", error);
 
             if first_error.is_none() {
-                first_error = Some(message);
+                first_error = Some(error);
             }
         }
     }
@@ -925,6 +983,48 @@ fn restore_clipboard_windows(backup: ClipboardBackup) -> Result<(), String> {
         Err(format!(
             "Clipboard was partially restored; {failed_formats} format(s) failed out of {} backed-up bytes. First failure: {error}",
             backup.total_bytes
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn restore_clipboard_format_windows(item: ClipboardFormatBackup) -> Result<(), String> {
+    match item.data {
+        ClipboardFormatBackupData::Raw(data) => {
+            clipboard_win::raw::set_without_clear(item.format, &data)
+                .map_err(|error| format!("format {} restore failed: {error}", item.format))
+        }
+        ClipboardFormatBackupData::EnhancedMetafile(data) => {
+            restore_enhanced_metafile_windows(item.format, &data)
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn restore_enhanced_metafile_windows(format: u32, data: &[u8]) -> Result<(), String> {
+    use windows_sys::Win32::{
+        Graphics::Gdi::{DeleteEnhMetaFile, SetEnhMetaFileBits},
+        System::DataExchange::SetClipboardData,
+    };
+
+    let handle = unsafe { SetEnhMetaFileBits(data.len() as u32, data.as_ptr()) };
+
+    if handle.is_null() {
+        return Err(format!(
+            "format {format} restore failed: enhanced metafile handle could not be recreated"
+        ));
+    }
+
+    let restored = unsafe { SetClipboardData(format, handle) };
+
+    if restored.is_null() {
+        unsafe {
+            DeleteEnhMetaFile(handle);
+        }
+        Err(format!(
+            "format {format} restore failed: enhanced metafile could not be placed on clipboard"
         ))
     } else {
         Ok(())
