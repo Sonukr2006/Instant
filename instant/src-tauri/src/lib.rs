@@ -1242,21 +1242,40 @@ fn keyboard_input(
     key_up: bool,
 ) -> windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
+        MapVirtualKeyW, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
+        KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MAPVK_VK_TO_VSC_EX,
     };
+
+    let scan_code = unsafe { MapVirtualKeyW(virtual_key as u32, MAPVK_VK_TO_VSC_EX) } as u16;
+    let mut flags = KEYEVENTF_SCANCODE;
+
+    if virtual_key_requires_extended_flag(virtual_key) {
+        flags |= KEYEVENTF_EXTENDEDKEY;
+    }
+
+    if key_up {
+        flags |= KEYEVENTF_KEYUP;
+    }
 
     INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
-                wVk: virtual_key,
-                wScan: 0,
-                dwFlags: if key_up { KEYEVENTF_KEYUP } else { 0 },
+                wVk: 0,
+                wScan: scan_code,
+                dwFlags: flags,
                 time: 0,
                 dwExtraInfo: 0,
             },
         },
     }
+}
+
+#[cfg(target_os = "windows")]
+fn virtual_key_requires_extended_flag(virtual_key: u16) -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_INSERT;
+
+    virtual_key == VK_INSERT
 }
 
 fn log_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
