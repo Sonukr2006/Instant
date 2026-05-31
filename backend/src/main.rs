@@ -22,8 +22,8 @@ const DEFAULT_BIND_ADDR: &str = "127.0.0.1:8080";
 const DEFAULT_FREE_DAILY_LIMIT: u32 = 20;
 const DEFAULT_PRO_DAILY_LIMIT: u32 = 500;
 const DEFAULT_MAX_PROMPT_CHARS: usize = 60_000;
-const MAX_ERROR_DETAIL_CHARS: usize = 1_500;
 const MIN_JWT_SECRET_BYTES: usize = 32;
+const GEMINI_SERVICE_NAME: &str = "Gemini API";
 const AI_SYSTEM_PROMPT: &str = "You are a smart, adaptive developer assistant.
 Analyze the incoming user payload before choosing a response style.
 If the payload is a casual message, greeting, reading note, PDF excerpt, or general conceptual question, respond naturally, conversationally, and concisely as a helpful peer.
@@ -309,23 +309,25 @@ async fn fetch_gemini_response(state: &AppState, prompt_context: &str) -> Result
         .json(&payload)
         .send()
         .await
-        .map_err(|error| ApiError::BadGateway(format!("Failed to reach Gemini API: {error}")))?;
+        .map_err(|error| {
+            ApiError::BadGateway(upstream_request_error(GEMINI_SERVICE_NAME, &error))
+        })?;
 
     let status = response.status();
 
     if !status.is_success() {
-        let detail = response.text().await.unwrap_or_default();
-        let detail = truncate_error_detail(detail.trim());
-
-        return Err(ApiError::BadGateway(format!(
-            "Gemini API request failed with HTTP {}. {}",
+        return Err(ApiError::BadGateway(upstream_status_error(
+            GEMINI_SERVICE_NAME,
             status.as_u16(),
-            detail
         )));
     }
 
     let data = response.json::<GeminiResponse>().await.map_err(|error| {
-        ApiError::BadGateway(format!("Failed to parse Gemini response: {error}"))
+        tracing::warn!("Failed to parse Gemini response: {error}");
+        ApiError::BadGateway(
+            "Gemini API returned a response that Instant could not read safely. Please try again."
+                .to_string(),
+        )
     })?;
 
     extract_gemini_text(data)
@@ -382,6 +384,37 @@ fn gemini_empty_response_error(
     }
 
     ApiError::BadGateway("Gemini response did not contain generated text.".to_string())
+}
+
+fn upstream_request_error(service_name: &str, error: &reqwest::Error) -> String {
+    if error.is_timeout() {
+        return format!(
+            "{service_name} request timed out. Please check your connection and try again."
+        );
+    }
+
+    if error.is_connect() {
+        return format!("{service_name} is unreachable right now. Please check your internet connection and try again.");
+    }
+
+    format!("{service_name} request failed before completion. Please try again.")
+}
+
+fn upstream_status_error(service_name: &str, status_code: u16) -> String {
+    match status_code {
+        401 | 403 => format!(
+            "{service_name} rejected the request credentials. Please update the server API key."
+        ),
+        408 | 429 => format!(
+            "{service_name} is busy or rate limited the request. Please wait a moment and try again."
+        ),
+        500..=599 => format!(
+            "{service_name} is temporarily unavailable. Please try again shortly."
+        ),
+        _ => format!(
+            "{service_name} request failed with HTTP {status_code}. Please try again."
+        ),
+    }
 }
 
 fn consume_quota(state: &AppState, user: &AuthUser) -> Result<QuotaCharge, ApiError> {
@@ -564,17 +597,6 @@ fn jwt_validation(config: &AppConfig) -> Validation {
     validation
 }
 
-fn truncate_error_detail(detail: &str) -> String {
-    let mut chars = detail.chars();
-    let truncated: String = chars.by_ref().take(MAX_ERROR_DETAIL_CHARS).collect();
-
-    if chars.next().is_some() {
-        format!("{truncated}...")
-    } else {
-        truncated
-    }
-}
-
 fn init_tracing() {
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
@@ -719,5 +741,23 @@ mod tests {
             ApiError::BadGateway(message) => assert!(message.contains("SAFETY")),
             _ => panic!("expected bad gateway"),
         }
+    }
+
+    #[test]
+    fn upstream_status_errors_are_sanitized() {
+        let message = upstream_status_error(GEMINI_SERVICE_NAME, 500);
+
+        assert!(message.contains("temporarily unavailable"));
+        assert!(!message.contains("prompt"));
+        assert!(!message.contains("API_KEY"));
+    }
+
+    #[test]
+    fn upstream_auth_status_does_not_echo_provider_body() {
+        let message = upstream_status_error(GEMINI_SERVICE_NAME, 403);
+
+        assert!(message.contains("rejected the request credentials"));
+        assert!(!message.contains("AIza"));
+        assert!(!message.contains("selected text"));
     }
 }

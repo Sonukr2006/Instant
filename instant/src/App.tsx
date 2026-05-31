@@ -25,6 +25,12 @@ function formatError(error: unknown, fallback: string) {
   return fallback;
 }
 
+function reportClientError(message: string) {
+  if (import.meta.env.DEV) {
+    console.error(message);
+  }
+}
+
 function App() {
   const [chatPrompt, setChatPrompt] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
@@ -55,7 +61,7 @@ function App() {
     } catch (error) {
       const message = formatError(error, "Unable to read clipboard text.");
 
-      console.error("Failed to fetch clipboard text:", error);
+      reportClientError("Failed to fetch clipboard text.");
       if (shouldOverwritePrompt) {
         setChatPrompt("");
       }
@@ -82,7 +88,7 @@ function App() {
     } catch (error) {
       const message = formatError(error, "An unexpected error occurred during the AI request.");
 
-      console.error("Failed to fetch AI response:", error);
+      reportClientError("Failed to fetch AI response.");
       if (aiRequestIdRef.current === requestId) {
         setAiResponse(`AI request failed: ${message}`);
       }
@@ -103,7 +109,7 @@ function App() {
     } catch (error) {
       const message = formatError(error, "Unable to save login session.");
 
-      console.error("Failed to save auth session:", error);
+      reportClientError("Failed to save auth session.");
       setErrorMessage(message);
     }
   }
@@ -118,7 +124,7 @@ function App() {
     } catch (error) {
       const message = formatError(error, "Unable to clear login session.");
 
-      console.error("Failed to clear auth session:", error);
+      reportClientError("Failed to clear auth session.");
       setErrorMessage(message);
     }
   }
@@ -137,7 +143,7 @@ function App() {
       .catch((error) => {
         const message = formatError(error, "Unable to load login session.");
 
-        console.error("Failed to load auth session:", error);
+        reportClientError("Failed to load auth session.");
         if (!isDisposed) {
           setErrorMessage(message);
         }
@@ -184,8 +190,8 @@ function App() {
 
         unlisten = cleanup;
       })
-      .catch((error) => {
-        console.error("Failed to register captured context listener:", error);
+      .catch(() => {
+        reportClientError("Failed to register captured context listener.");
       });
 
     return () => {

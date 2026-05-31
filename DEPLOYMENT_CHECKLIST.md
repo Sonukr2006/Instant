@@ -6,6 +6,9 @@
 - [ ] No `unwrap()` or `panic!()` in production code paths
 - [ ] All Rust functions return `Result<T, E>` types
 - [ ] Error messages are descriptive and user-friendly
+- [ ] Selected/copied text is never written to application logs
+- [ ] API keys, bearer tokens, and provider URLs with query secrets are never written to logs
+- [ ] Third-party provider error bodies are not shown directly to users
 - [ ] Async operations properly handled with `.await`
 - [ ] Global shortcut registration wrapped in error handling
 
@@ -15,6 +18,7 @@
 - [ ] Keyboard event listeners cleaned up (ESC to close)
 - [ ] Overlay window resizes properly on different displays
 - [ ] No console errors in development mode
+- [ ] Production frontend does not log raw error objects that may contain sensitive text or tokens
 
 ### Configuration
 - [ ] Capabilities explicitly defined in `capabilities/default.json`
@@ -22,7 +26,7 @@
   - [ ] `visible: false` (hidden on startup)
   - [ ] `decorations: false` (borderless)
   - [ ] `transparent: true` (transparency enabled)
-  - [ ] `alwaysOnTop: true` (overlay behavior)
+  - [ ] `alwaysOnTop: false` at rest; app may temporarily raise the overlay only while showing it
   - [ ] `resizable: false` (fixed dimensions)
 - [ ] Release profile optimizations enabled in Cargo.toml
 
@@ -35,6 +39,9 @@
 
 ### Security
 - [ ] No credentials or secrets in code
+- [ ] User selected text is sent only after an explicit user action
+- [ ] Clipboard fallback restores prior clipboard content or fails closed
+- [ ] Server-side provider failures return sanitized messages
 - [ ] CSP headers properly configured
 - [ ] Window isolation verified
 - [ ] No network requests to untrusted sources

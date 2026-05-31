@@ -21,6 +21,8 @@ const DEFAULT_GEMINI_MODEL: &str = "gemini-2.5-flash";
 const GEMINI_TIMEOUT_SECS: u64 = 35;
 const MAX_PROMPT_CHARS: usize = 60_000;
 const MAX_ERROR_DETAIL_CHARS: usize = 1_500;
+const GEMINI_SERVICE_NAME: &str = "Gemini API";
+const INSTANT_BACKEND_SERVICE_NAME: &str = "Instant backend";
 const AI_CONFIG_FILE_NAME: &str = "instant-ai-context.json";
 #[cfg(any(debug_assertions, test))]
 const APP_MODE_ENV: &str = "INSTANT_APP_MODE";
@@ -305,7 +307,7 @@ async fn fetch_remote_ai_response(
         .json(&RemoteAskRequest { prompt_context })
         .send()
         .await
-        .map_err(|error| format!("Failed to reach Instant backend: {error}"))?;
+        .map_err(|error| upstream_request_error(INSTANT_BACKEND_SERVICE_NAME, &error))?;
 
     let status = response.status();
 
@@ -366,30 +368,18 @@ async fn fetch_local_gemini_response(
         .json(&payload)
         .send()
         .await
-        .map_err(|error| format!("Failed to reach Gemini API: {error}"))?;
+        .map_err(|error| upstream_request_error(GEMINI_SERVICE_NAME, &error))?;
 
     let status = response.status();
 
     if !status.is_success() {
-        let detail = response.text().await.unwrap_or_default();
-        let detail = truncate_error_detail(detail.trim());
-        let suffix = if detail.is_empty() {
-            String::new()
-        } else {
-            format!(" {detail}")
-        };
-
-        return Err(format!(
-            "Gemini API request failed with HTTP {}.{}",
-            status.as_u16(),
-            suffix
-        ));
+        return Err(upstream_status_error(GEMINI_SERVICE_NAME, status.as_u16()));
     }
 
-    let data = response
-        .json::<GeminiResponse>()
-        .await
-        .map_err(|error| format!("Failed to parse Gemini response: {error}"))?;
+    let data = response.json::<GeminiResponse>().await.map_err(|_| {
+        "Gemini API returned a response that Instant could not read safely. Please try again."
+            .to_string()
+    })?;
 
     extract_gemini_text(data)
 }
@@ -441,6 +431,37 @@ fn gemini_empty_response_error(
     }
 
     "Gemini response did not contain generated text.".to_string()
+}
+
+fn upstream_request_error(service_name: &str, error: &reqwest::Error) -> String {
+    if error.is_timeout() {
+        return format!(
+            "{service_name} request timed out. Please check your connection and try again."
+        );
+    }
+
+    if error.is_connect() {
+        return format!("{service_name} is unreachable right now. Please check your internet connection and try again.");
+    }
+
+    format!("{service_name} request failed before completion. Please try again.")
+}
+
+fn upstream_status_error(service_name: &str, status_code: u16) -> String {
+    match status_code {
+        401 | 403 => format!(
+            "{service_name} rejected the request credentials. Please reconnect your account or update the server API key."
+        ),
+        408 | 429 => format!(
+            "{service_name} is busy or rate limited the request. Please wait a moment and try again."
+        ),
+        500..=599 => format!(
+            "{service_name} is temporarily unavailable. Please try again shortly."
+        ),
+        _ => format!(
+            "{service_name} request failed with HTTP {status_code}. Please try again."
+        ),
+    }
 }
 
 fn resolve_backend_config(app: &AppHandle) -> Result<BackendConfigResolution, String> {
@@ -1586,5 +1607,23 @@ mod tests {
     #[test]
     fn app_mode_parser_rejects_unknown_values() {
         assert!(parse_app_mode("local").is_err());
+    }
+
+    #[test]
+    fn upstream_status_errors_are_sanitized() {
+        let message = upstream_status_error(GEMINI_SERVICE_NAME, 500);
+
+        assert!(message.contains("temporarily unavailable"));
+        assert!(!message.contains("prompt"));
+        assert!(!message.contains("API_KEY"));
+    }
+
+    #[test]
+    fn upstream_auth_status_does_not_echo_provider_body() {
+        let message = upstream_status_error(GEMINI_SERVICE_NAME, 403);
+
+        assert!(message.contains("rejected the request credentials"));
+        assert!(!message.contains("AIza"));
+        assert!(!message.contains("selected text"));
     }
 }

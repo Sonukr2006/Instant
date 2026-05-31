@@ -218,7 +218,51 @@ Test cases:
 - Slow app copy response.
 - Rapid shortcut presses.
 
-## Phase 3 - Linux Wayland-Safe Workflow
+## Phase 3 - Production Privacy and Failure Hardening
+
+Status: In Progress
+
+Purpose:
+Make capture, AI requests, and error handling safe enough for public users.
+
+Current implementation:
+- Selected/copied text is not intentionally written to desktop or backend logs.
+- Production desktop builds require backend/auth and do not expose Gemini keys.
+- Windows capture uses UI Automation before clipboard fallback when possible.
+- Clipboard fallback avoids unsupported clipboard formats and restores backed-up content.
+- Frontend no longer logs raw error objects in production.
+- Gemini/backend transport and HTTP failures use sanitized user-facing messages.
+
+Remaining work:
+- Add a first-run privacy/consent screen before sending captured text to the backend.
+- Add configurable shortcuts instead of hardcoded shortcuts.
+- Add opt-in crash reporting with strict redaction.
+- Add structured backend request IDs without logging prompt bodies.
+- Add persistent quota storage before public launch.
+
+Files involved:
+- `instant/src-tauri/src/lib.rs`
+- `instant/src/App.tsx`
+- `instant/src/services/aiService.ts`
+- `backend/src/main.rs`
+- `DEPLOYMENT_CHECKLIST.md`
+
+Acceptance criteria:
+- Prompt context, selected text, clipboard text, tokens, and provider API keys do not appear in logs.
+- Network failures and provider failures show clean, actionable messages.
+- Public builds fail closed when backend/auth is missing.
+- Clipboard fallback never silently destroys existing clipboard content.
+
+Test cases:
+- AI provider timeout.
+- AI provider HTTP 401/403.
+- AI provider HTTP 429.
+- AI provider HTTP 500.
+- Backend missing auth token.
+- Clipboard with non-text data.
+- Production frontend error path.
+
+## Phase 4 - Linux Wayland-Safe Workflow
 
 Status: Partially Complete
 
@@ -254,7 +298,7 @@ Test cases:
 - Clipboard empty.
 - Clipboard has non-text data.
 
-## Phase 4 - Real Authentication
+## Phase 5 - Real Authentication
 
 Status: Incomplete
 

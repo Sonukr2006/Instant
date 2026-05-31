@@ -16,6 +16,10 @@ export async function fetchAIResponse(promptContext: string): Promise<string> {
       throw new Error(`Failed to fetch AI response: ${error.message}`);
     }
 
-    throw new Error("Failed to fetch AI response due to an unknown error.");
+    if (typeof error === "string" && error.trim()) {
+      throw new Error(`Failed to fetch AI response: ${error.trim()}`);
+    }
+
+    throw new Error("Failed to fetch AI response. Please try again.");
   }
 }
