@@ -28,11 +28,13 @@ const CONTEXT_CAPTURED_EVENT: &str = "context-captured";
 const REMOTE_ASK_PATH: &str = "/v1/ai/ask";
 const OVERLAY_TOPMOST_RELEASE_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
 #[cfg(target_os = "windows")]
-const SELECTED_TEXT_COPY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2500);
+const SELECTED_TEXT_COPY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1800);
 #[cfg(target_os = "windows")]
 const SELECTED_TEXT_COPY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
 #[cfg(target_os = "windows")]
-const SHORTCUT_RELEASE_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(120);
+const SHORTCUT_RELEASE_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
+#[cfg(target_os = "windows")]
+const SELECTED_TEXT_COPY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(180);
 #[cfg(target_os = "windows")]
 const SHORTCUT_KEYS_RELEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(900);
 #[cfg(target_os = "windows")]
@@ -189,6 +191,23 @@ impl ClipboardFormatBackupData {
     fn len(&self) -> usize {
         match self {
             Self::Raw(data) | Self::EnhancedMetafile(data) => data.len(),
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy)]
+enum CopyShortcut {
+    CtrlC,
+    CtrlInsert,
+}
+
+#[cfg(target_os = "windows")]
+impl CopyShortcut {
+    fn label(self) -> &'static str {
+        match self {
+            Self::CtrlC => "Ctrl+C",
+            Self::CtrlInsert => "Ctrl+Insert",
         }
     }
 }
@@ -898,19 +917,49 @@ fn capture_selected_text_windows() -> Result<String, SelectedTextCaptureError> {
         )));
     }
 
-    let sequence_before = clipboard_sequence_number();
-
-    send_ctrl_c()?;
-    let captured_text = match wait_for_copied_text(sequence_before) {
-        Some(captured_text) => captured_text,
-        None => return Err(SelectedTextCaptureError::NoSelectedText),
-    };
+    let captured_text = copy_selected_text_with_retries()?;
 
     if let Err(error) = restore_clipboard_windows(clipboard_backup) {
         log::warn!("Failed to restore previous clipboard state: {}", error);
     }
 
     captured_text.map_err(SelectedTextCaptureError::Other)
+}
+
+#[cfg(target_os = "windows")]
+fn copy_selected_text_with_retries() -> Result<Result<String, String>, SelectedTextCaptureError> {
+    let copy_attempts = [
+        CopyShortcut::CtrlC,
+        CopyShortcut::CtrlInsert,
+        CopyShortcut::CtrlC,
+    ];
+    let mut last_text_error = None;
+
+    for (index, shortcut) in copy_attempts.into_iter().enumerate() {
+        let sequence_before = clipboard_sequence_number();
+        send_copy_shortcut(shortcut)?;
+
+        match wait_for_copied_text(sequence_before) {
+            Some(Ok(text)) => return Ok(Ok(text)),
+            Some(Err(error)) => return Ok(Err(error)),
+            None => {
+                last_text_error = Some(format!(
+                    "{} did not update the clipboard.",
+                    shortcut.label()
+                ));
+
+                if index + 1 < copy_attempts.len() {
+                    std::thread::sleep(SELECTED_TEXT_COPY_RETRY_DELAY);
+                }
+            }
+        }
+    }
+
+    if let Some(error) = last_text_error {
+        log::warn!("Selected-text auto-copy failed: {}", error);
+    }
+
+    Err(SelectedTextCaptureError::NoSelectedText)
 }
 
 #[cfg(target_os = "windows")]
@@ -1152,15 +1201,21 @@ fn wait_for_copied_text(sequence_before: u32) -> Option<Result<String, String>> 
 }
 
 #[cfg(target_os = "windows")]
-fn send_ctrl_c() -> Result<(), String> {
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{SendInput, INPUT, VK_CONTROL};
+fn send_copy_shortcut(shortcut: CopyShortcut) -> Result<(), String> {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, VK_CONTROL, VK_INSERT,
+    };
 
     const VK_C: u16 = 0x43;
+    let copy_key = match shortcut {
+        CopyShortcut::CtrlC => VK_C,
+        CopyShortcut::CtrlInsert => VK_INSERT,
+    };
 
     let mut inputs = [
         keyboard_input(VK_CONTROL, false),
-        keyboard_input(VK_C, false),
-        keyboard_input(VK_C, true),
+        keyboard_input(copy_key, false),
+        keyboard_input(copy_key, true),
         keyboard_input(VK_CONTROL, true),
     ];
     let sent = unsafe {
@@ -1174,7 +1229,10 @@ fn send_ctrl_c() -> Result<(), String> {
     if sent == inputs.len() as u32 {
         Ok(())
     } else {
-        Err("Windows did not accept the Ctrl+C input sequence.".to_string())
+        Err(format!(
+            "Windows did not accept the {} input sequence.",
+            shortcut.label()
+        ))
     }
 }
 
