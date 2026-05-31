@@ -2009,6 +2009,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
  "tokio",
+ "windows",
  "windows-sys 0.61.2",
 ]
 

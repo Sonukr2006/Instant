@@ -910,6 +910,17 @@ fn capture_selected_text_windows(
         return Err(SelectedTextCaptureError::ShortcutKeysStillHeld);
     }
 
+    match capture_selected_text_with_uia() {
+        Ok(Some(text)) => return Ok(text),
+        Ok(None) => {}
+        Err(error) => {
+            log::debug!(
+                "Windows UI Automation selected-text capture unavailable: {}",
+                error
+            );
+        }
+    }
+
     let clipboard_owner = clipboard_owner_window(window)?;
     let clipboard_backup = backup_clipboard_windows(clipboard_owner)?;
 
@@ -927,6 +938,123 @@ fn capture_selected_text_windows(
     }
 
     captured_text.map_err(SelectedTextCaptureError::Other)
+}
+
+#[cfg(target_os = "windows")]
+fn capture_selected_text_with_uia() -> Result<Option<String>, String> {
+    use windows::Win32::{
+        Foundation::RPC_E_CHANGED_MODE,
+        System::Com::{
+            CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+            COINIT_APARTMENTTHREADED,
+        },
+        UI::Accessibility::{
+            CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationTextPattern,
+            UIA_TextPatternId,
+        },
+    };
+
+    struct ComApartmentGuard {
+        should_uninitialize: bool,
+    }
+
+    impl Drop for ComApartmentGuard {
+        fn drop(&mut self) {
+            if self.should_uninitialize {
+                unsafe {
+                    CoUninitialize();
+                }
+            }
+        }
+    }
+
+    let com_init = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    let _com_guard = if com_init.is_ok() {
+        ComApartmentGuard {
+            should_uninitialize: true,
+        }
+    } else if com_init == RPC_E_CHANGED_MODE {
+        ComApartmentGuard {
+            should_uninitialize: false,
+        }
+    } else {
+        return Err(format!(
+            "Unable to initialize COM for UI Automation: {com_init:?}"
+        ));
+    };
+
+    let automation: IUIAutomation =
+        unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) }
+            .map_err(|error| format!("Unable to create UI Automation client: {error}"))?;
+
+    let focused_element = unsafe { automation.GetFocusedElement() }
+        .map_err(|error| format!("Unable to read the focused UI element: {error}"))?;
+    let walker = unsafe { automation.ControlViewWalker() }.ok();
+    let mut current_element: Option<IUIAutomationElement> = Some(focused_element);
+
+    for _ in 0..6 {
+        let Some(element) = current_element else {
+            break;
+        };
+
+        if let Ok(text_pattern) =
+            unsafe { element.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId) }
+        {
+            if let Some(text) = selected_text_from_uia_pattern(&text_pattern)
+                .map_err(|error| format!("Unable to read UI Automation selection: {error}"))?
+            {
+                return Ok(Some(text));
+            }
+        }
+
+        current_element = walker
+            .as_ref()
+            .and_then(|tree_walker| unsafe { tree_walker.GetParentElement(&element) }.ok());
+    }
+
+    Ok(None)
+}
+
+#[cfg(target_os = "windows")]
+fn selected_text_from_uia_pattern(
+    text_pattern: &windows::Win32::UI::Accessibility::IUIAutomationTextPattern,
+) -> windows::core::Result<Option<String>> {
+    let ranges = unsafe { text_pattern.GetSelection()? };
+    let range_count = unsafe { ranges.Length()? };
+
+    if range_count <= 0 {
+        return Ok(None);
+    }
+
+    let mut selected_text = String::new();
+
+    for index in 0..range_count {
+        let remaining_chars = MAX_PROMPT_CHARS.saturating_sub(selected_text.chars().count());
+
+        if remaining_chars == 0 {
+            break;
+        }
+
+        let text_range = unsafe { ranges.GetElement(index)? };
+        let range_text = unsafe { text_range.GetText(remaining_chars as i32)? };
+        let range_text = range_text.to_string();
+
+        if range_text.is_empty() {
+            continue;
+        }
+
+        if !selected_text.is_empty() {
+            selected_text.push('\n');
+        }
+
+        selected_text.push_str(&range_text);
+    }
+
+    if selected_text.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(selected_text))
+    }
 }
 
 #[cfg(target_os = "windows")]
