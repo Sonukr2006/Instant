@@ -22,6 +22,7 @@ const AI_CONFIG_FILE_NAME: &str = "instant-ai-context.json";
 const APP_MODE_ENV: &str = "INSTANT_APP_MODE";
 const CONTEXT_CAPTURED_EVENT: &str = "context-captured";
 const REMOTE_ASK_PATH: &str = "/v1/ai/ask";
+const OVERLAY_TOPMOST_RELEASE_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
 #[cfg(target_os = "windows")]
 const SELECTED_TEXT_COPY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(650);
 #[cfg(target_os = "windows")]
@@ -627,9 +628,7 @@ fn toggle_window_with_clipboard_context(
         .map_err(|e| format!("Failed to check visibility: {}", e))?;
 
     if is_visible {
-        window
-            .hide()
-            .map_err(|e| format!("Failed to hide window: {}", e))?;
+        hide_overlay_window(window);
     } else {
         show_and_focus_window(window)?;
         emit_clipboard_context(app);
@@ -679,6 +678,10 @@ fn emit_context_payload(app: &AppHandle, payload: CapturedContextPayload) {
 }
 
 fn show_and_focus_window(window: &WebviewWindow) -> Result<(), String> {
+    if let Err(error) = window.set_always_on_top(true) {
+        log::warn!("Failed to temporarily raise overlay window: {}", error);
+    }
+
     window
         .show()
         .map_err(|e| format!("Failed to show window: {}", e))?;
@@ -698,7 +701,44 @@ fn show_and_focus_window(window: &WebviewWindow) -> Result<(), String> {
             .map_err(|e| format!("Failed to position window: {}", e))?;
     }
 
+    release_overlay_topmost(window.clone());
     Ok(())
+}
+
+fn release_overlay_topmost(window: WebviewWindow) {
+    std::thread::spawn(move || {
+        std::thread::sleep(OVERLAY_TOPMOST_RELEASE_DELAY);
+
+        if let Err(error) = window.set_always_on_top(false) {
+            log::warn!("Failed to release overlay always-on-top state: {}", error);
+        }
+    });
+}
+
+fn hide_overlay_window(window: &WebviewWindow) {
+    if let Err(error) = window.set_always_on_top(false) {
+        log::warn!(
+            "Failed to release overlay always-on-top state before hide: {}",
+            error
+        );
+    }
+
+    if let Err(error) = window.hide() {
+        log::error!("Failed to hide overlay window: {}", error);
+    }
+}
+
+fn hide_tauri_window(window: &tauri::Window) {
+    if let Err(error) = window.set_always_on_top(false) {
+        log::warn!(
+            "Failed to release window always-on-top state before hide: {}",
+            error
+        );
+    }
+
+    if let Err(error) = window.hide() {
+        log::error!("Failed to hide window: {}", error);
+    }
 }
 
 fn install_tray(app: &tauri::App) -> tauri::Result<()> {
@@ -789,9 +829,7 @@ fn handle_windows_global_shortcut_inner(app: &AppHandle) -> Result<(), String> {
         .map_err(|e| format!("Failed to check visibility: {}", e))?;
 
     if is_visible {
-        window
-            .hide()
-            .map_err(|e| format!("Failed to hide window: {}", e))?;
+        hide_overlay_window(&window);
         return Ok(());
     }
 
@@ -1226,14 +1264,15 @@ pub fn run() {
         .on_window_event(|window, event| match event {
             WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
-                if let Err(error) = window.hide() {
-                    log::error!("Failed to hide window on close request: {}", error);
-                }
+                hide_tauri_window(window);
             }
             WindowEvent::Focused(true) => {
                 if let Err(error) = window.emit("window-focused", ()) {
                     log::error!("Failed to emit window-focused event: {}", error);
                 }
+            }
+            WindowEvent::Focused(false) => {
+                hide_tauri_window(window);
             }
             _ => {}
         })
