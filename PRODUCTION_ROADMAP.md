@@ -232,9 +232,9 @@ Current implementation:
 - Clipboard fallback avoids unsupported clipboard formats and restores backed-up content.
 - Frontend no longer logs raw error objects in production.
 - Gemini/backend transport and HTTP failures use sanitized user-facing messages.
+- First AI request requires explicit privacy confirmation before prompt text is sent.
 
 Remaining work:
-- Add a first-run privacy/consent screen before sending captured text to the backend.
 - Add configurable shortcuts instead of hardcoded shortcuts.
 - Add opt-in crash reporting with strict redaction.
 - Add structured backend request IDs without logging prompt bodies.
@@ -261,6 +261,7 @@ Test cases:
 - Backend missing auth token.
 - Clipboard with non-text data.
 - Production frontend error path.
+- First AI request before privacy confirmation.
 
 ## Phase 4 - Linux Wayland-Safe Workflow
 

@@ -6,6 +6,7 @@ import { fetchAIResponse } from "./services/aiService";
 import "./App.css";
 
 const ResponseArea = lazy(() => import("./components/ResponseArea"));
+const PRIVACY_CONSENT_STORAGE_KEY = "instant-ai-context.privacy-consent.v1";
 
 type CapturedContextEvent = {
   text?: string | null;
@@ -31,6 +32,23 @@ function reportClientError(message: string) {
   }
 }
 
+function readStoredPrivacyConsent() {
+  try {
+    return localStorage.getItem(PRIVACY_CONSENT_STORAGE_KEY) === "accepted";
+  } catch {
+    return false;
+  }
+}
+
+function storePrivacyConsent() {
+  try {
+    localStorage.setItem(PRIVACY_CONSENT_STORAGE_KEY, "accepted");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function App() {
   const [chatPrompt, setChatPrompt] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
@@ -41,6 +59,8 @@ function App() {
   const [authTokenInput, setAuthTokenInput] = useState("");
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [authPanelOpen, setAuthPanelOpen] = useState(false);
+  const [privacyConsentAccepted, setPrivacyConsentAccepted] = useState(readStoredPrivacyConsent);
+  const [privacyPanelOpen, setPrivacyPanelOpen] = useState(false);
   const userEditedPromptRef = useRef(false);
   const aiRequestIdRef = useRef(0);
   const aiLoadingRef = useRef(false);
@@ -71,9 +91,14 @@ function App() {
     }
   }, []);
 
-  async function handleAskAI() {
+  async function submitAIRequest() {
+    if (aiLoadingRef.current) {
+      return;
+    }
+
     const requestId = aiRequestIdRef.current + 1;
     aiRequestIdRef.current = requestId;
+    aiLoadingRef.current = true;
 
     try {
       setAiLoading(true);
@@ -94,9 +119,33 @@ function App() {
       }
     } finally {
       if (aiRequestIdRef.current === requestId) {
+        aiLoadingRef.current = false;
         setAiLoading(false);
       }
     }
+  }
+
+  async function handleAskAI() {
+    if (!privacyConsentAccepted) {
+      setActiveTab("chat");
+      setPrivacyPanelOpen(true);
+      setErrorMessage("");
+      return;
+    }
+
+    await submitAIRequest();
+  }
+
+  async function handleAcceptPrivacyAndSend() {
+    const stored = storePrivacyConsent();
+
+    if (!stored) {
+      reportClientError("Failed to persist privacy confirmation.");
+    }
+
+    setPrivacyConsentAccepted(true);
+    setPrivacyPanelOpen(false);
+    await submitAIRequest();
   }
 
   async function handleSaveToken() {
@@ -173,6 +222,8 @@ function App() {
       setActiveTab("chat");
       setAiResponse("");
       setAiLoading(false);
+      aiLoadingRef.current = false;
+      setPrivacyPanelOpen(false);
       aiRequestIdRef.current += 1;
 
       if (capturedText) {
@@ -282,6 +333,35 @@ function App() {
                   </button>
                 </>
               )}
+            </section>
+          ) : null}
+
+          {privacyPanelOpen ? (
+            <section className="privacy-panel" role="dialog" aria-label="Privacy confirmation">
+              <div className="privacy-copy">
+                <h2>Privacy confirmation</h2>
+                <p>
+                  The text in the prompt will be sent to Instant AI for processing. Do not send
+                  passwords, private keys, financial data, or confidential material.
+                </p>
+              </div>
+              <div className="privacy-actions">
+                <button
+                  className="privacy-secondary-btn"
+                  type="button"
+                  onClick={() => setPrivacyPanelOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="privacy-primary-btn"
+                  type="button"
+                  onClick={() => void handleAcceptPrivacyAndSend()}
+                  disabled={aiLoading}
+                >
+                  Agree & Send
+                </button>
+              </div>
             </section>
           ) : null}
 

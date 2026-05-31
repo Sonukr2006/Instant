@@ -280,6 +280,83 @@ button {
   opacity: 0.44;
 }
 
+.privacy-panel {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  border: 1px solid rgba(250, 204, 21, 0.3);
+  border-radius: 12px;
+  padding: 12px;
+  background: rgba(113, 63, 18, 0.34);
+}
+
+.privacy-copy {
+  min-width: 0;
+}
+
+.privacy-copy h2 {
+  margin: 0 0 5px;
+  color: #fef3c7;
+  font-size: 0.92rem;
+  line-height: 1.25;
+}
+
+.privacy-copy p {
+  margin: 0;
+  color: rgba(254, 243, 199, 0.86);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.privacy-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.privacy-primary-btn,
+.privacy-secondary-btn {
+  height: 36px;
+  flex: 0 0 auto;
+  border-radius: 10px;
+  padding: 0 12px;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 720;
+  transition:
+    opacity 160ms ease,
+    background-color 160ms ease,
+    border-color 160ms ease;
+}
+
+.privacy-primary-btn {
+  border: 1px solid rgba(250, 204, 21, 0.48);
+  color: #1f1600;
+  background: #facc15;
+}
+
+.privacy-secondary-btn {
+  border: 1px solid rgba(254, 243, 199, 0.2);
+  color: #fef3c7;
+  background: rgba(254, 243, 199, 0.06);
+}
+
+.privacy-primary-btn:hover {
+  background: #fde047;
+}
+
+.privacy-primary-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.privacy-secondary-btn:hover {
+  border-color: rgba(254, 243, 199, 0.36);
+  background: rgba(254, 243, 199, 0.1);
+}
+
 .chat-section {
   min-height: 0;
   display: flex;
@@ -635,6 +712,14 @@ button {
 
   .content-area {
     padding: 12px;
+  }
+
+  .privacy-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .privacy-actions {
+    justify-content: flex-end;
   }
 }
 
