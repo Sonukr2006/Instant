@@ -857,7 +857,7 @@ fn handle_windows_global_shortcut_inner(app: &AppHandle) -> Result<(), String> {
     }
 
     std::thread::sleep(SHORTCUT_RELEASE_SETTLE_DELAY);
-    let payload = capture_selected_text_payload();
+    let payload = capture_selected_text_payload(&window);
     show_and_focus_window(&window)?;
     emit_context_payload(app, payload);
 
@@ -865,8 +865,8 @@ fn handle_windows_global_shortcut_inner(app: &AppHandle) -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
-fn capture_selected_text_payload() -> CapturedContextPayload {
-    match capture_selected_text_windows() {
+fn capture_selected_text_payload(window: &WebviewWindow) -> CapturedContextPayload {
+    match capture_selected_text_windows(window) {
         Ok(text) => CapturedContextPayload {
             text: Some(text),
             error: None,
@@ -903,12 +903,15 @@ fn capture_selected_text_payload() -> CapturedContextPayload {
 }
 
 #[cfg(target_os = "windows")]
-fn capture_selected_text_windows() -> Result<String, SelectedTextCaptureError> {
+fn capture_selected_text_windows(
+    window: &WebviewWindow,
+) -> Result<String, SelectedTextCaptureError> {
     if !wait_for_shortcut_keys_released() {
         return Err(SelectedTextCaptureError::ShortcutKeysStillHeld);
     }
 
-    let clipboard_backup = backup_clipboard_windows()?;
+    let clipboard_owner = clipboard_owner_window(window)?;
+    let clipboard_backup = backup_clipboard_windows(clipboard_owner)?;
 
     if clipboard_backup.skipped_formats > 0 {
         return Err(SelectedTextCaptureError::Other(format!(
@@ -919,11 +922,25 @@ fn capture_selected_text_windows() -> Result<String, SelectedTextCaptureError> {
 
     let captured_text = copy_selected_text_with_retries()?;
 
-    if let Err(error) = restore_clipboard_windows(clipboard_backup) {
+    if let Err(error) = restore_clipboard_windows(clipboard_owner, clipboard_backup) {
         log::warn!("Failed to restore previous clipboard state: {}", error);
     }
 
     captured_text.map_err(SelectedTextCaptureError::Other)
+}
+
+#[cfg(target_os = "windows")]
+fn clipboard_owner_window(
+    window: &WebviewWindow,
+) -> Result<clipboard_win::types::HWND, SelectedTextCaptureError> {
+    window
+        .hwnd()
+        .map(|hwnd| hwnd.0 as clipboard_win::types::HWND)
+        .map_err(|error| {
+            SelectedTextCaptureError::Other(format!(
+                "Unable to resolve overlay window handle for clipboard ownership: {error}"
+            ))
+        })
 }
 
 #[cfg(target_os = "windows")]
@@ -993,8 +1010,8 @@ fn virtual_key_is_down(virtual_key: u16) -> bool {
 }
 
 #[cfg(target_os = "windows")]
-fn backup_clipboard_windows() -> Result<ClipboardBackup, String> {
-    let _clipboard = clipboard_win::Clipboard::new_attempts(10).map_err(|error| {
+fn backup_clipboard_windows(owner: clipboard_win::types::HWND) -> Result<ClipboardBackup, String> {
+    let _clipboard = clipboard_win::Clipboard::new_attempts_for(owner, 10).map_err(|error| {
         format!("Unable to access clipboard before selected-text capture: {error}")
     })?;
     let mut formats = Vec::new();
@@ -1094,8 +1111,11 @@ fn backup_enhanced_metafile_windows(format: u32) -> Result<ClipboardFormatBackup
 }
 
 #[cfg(target_os = "windows")]
-fn restore_clipboard_windows(backup: ClipboardBackup) -> Result<(), String> {
-    let _clipboard = clipboard_win::Clipboard::new_attempts(10)
+fn restore_clipboard_windows(
+    owner: clipboard_win::types::HWND,
+    backup: ClipboardBackup,
+) -> Result<(), String> {
+    let _clipboard = clipboard_win::Clipboard::new_attempts_for(owner, 10)
         .map_err(|error| format!("Unable to access clipboard for restore: {error}"))?;
 
     clipboard_win::raw::empty()
