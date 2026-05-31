@@ -29,6 +29,11 @@ const SELECTED_TEXT_COPY_POLL_INTERVAL: std::time::Duration = std::time::Duratio
 #[cfg(target_os = "windows")]
 const SHORTCUT_RELEASE_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(120);
 #[cfg(target_os = "windows")]
+const SHORTCUT_KEYS_RELEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(900);
+#[cfg(target_os = "windows")]
+const SHORTCUT_KEYS_RELEASE_POLL_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(20);
+#[cfg(target_os = "windows")]
 const MAX_CLIPBOARD_BACKUP_FORMATS: usize = 64;
 #[cfg(target_os = "windows")]
 const MAX_CLIPBOARD_BACKUP_BYTES: usize = 32 * 1024 * 1024;
@@ -185,6 +190,7 @@ impl ClipboardFormatBackupData {
 
 #[cfg(target_os = "windows")]
 enum SelectedTextCaptureError {
+    ShortcutKeysStillHeld,
     NoSelectedText,
     Other(String),
 }
@@ -193,6 +199,8 @@ enum SelectedTextCaptureError {
 impl std::fmt::Display for SelectedTextCaptureError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ShortcutKeysStillHeld => formatter
+                .write_str("Shortcut keys were still held, so selected-text capture was skipped."),
             Self::NoSelectedText => {
                 formatter.write_str("No selected text was copied after the shortcut.")
             }
@@ -803,6 +811,14 @@ fn capture_selected_text_payload() -> CapturedContextPayload {
             error: None,
             source: "selected_text",
         },
+        Err(SelectedTextCaptureError::ShortcutKeysStillHeld) => CapturedContextPayload {
+            text: None,
+            error: Some(
+                "Release Ctrl+Shift+Space fully before the overlay opens. Capture was skipped to avoid triggering browser Inspect mode."
+                    .to_string(),
+            ),
+            source: "selected_text",
+        },
         Err(SelectedTextCaptureError::NoSelectedText) => CapturedContextPayload {
             text: None,
             error: Some(
@@ -829,6 +845,10 @@ fn capture_selected_text_payload() -> CapturedContextPayload {
 
 #[cfg(target_os = "windows")]
 fn capture_selected_text_windows() -> Result<String, SelectedTextCaptureError> {
+    if !wait_for_shortcut_keys_released() {
+        return Err(SelectedTextCaptureError::ShortcutKeysStillHeld);
+    }
+
     let clipboard_backup = backup_clipboard_windows()?;
 
     if clipboard_backup.skipped_formats > 0 {
@@ -854,6 +874,33 @@ fn capture_selected_text_windows() -> Result<String, SelectedTextCaptureError> {
     }
 
     captured_text.map_err(SelectedTextCaptureError::Other)
+}
+
+#[cfg(target_os = "windows")]
+fn wait_for_shortcut_keys_released() -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_SHIFT, VK_SPACE};
+
+    let started_at = std::time::Instant::now();
+
+    while started_at.elapsed() < SHORTCUT_KEYS_RELEASE_TIMEOUT {
+        if !virtual_key_is_down(VK_CONTROL)
+            && !virtual_key_is_down(VK_SHIFT)
+            && !virtual_key_is_down(VK_SPACE)
+        {
+            return true;
+        }
+
+        std::thread::sleep(SHORTCUT_KEYS_RELEASE_POLL_INTERVAL);
+    }
+
+    false
+}
+
+#[cfg(target_os = "windows")]
+fn virtual_key_is_down(virtual_key: u16) -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+
+    unsafe { (GetAsyncKeyState(virtual_key as i32) as u16) & 0x8000 != 0 }
 }
 
 #[cfg(target_os = "windows")]
