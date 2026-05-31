@@ -24,7 +24,7 @@ const CONTEXT_CAPTURED_EVENT: &str = "context-captured";
 const REMOTE_ASK_PATH: &str = "/v1/ai/ask";
 const OVERLAY_TOPMOST_RELEASE_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
 #[cfg(target_os = "windows")]
-const SELECTED_TEXT_COPY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(650);
+const SELECTED_TEXT_COPY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2500);
 #[cfg(target_os = "windows")]
 const SELECTED_TEXT_COPY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
 #[cfg(target_os = "windows")]
@@ -899,13 +899,10 @@ fn capture_selected_text_windows() -> Result<String, SelectedTextCaptureError> {
     let sequence_before = clipboard_sequence_number();
 
     send_ctrl_c()?;
-    let clipboard_changed = wait_for_clipboard_change(sequence_before);
-
-    if !clipboard_changed {
-        return Err(SelectedTextCaptureError::NoSelectedText);
-    }
-
-    let captured_text = read_clipboard_text();
+    let captured_text = match wait_for_copied_text(sequence_before) {
+        Some(captured_text) => captured_text,
+        None => return Err(SelectedTextCaptureError::NoSelectedText),
+    };
 
     if let Err(error) = restore_clipboard_windows(clipboard_backup) {
         log::warn!("Failed to restore previous clipboard state: {}", error);
@@ -1122,18 +1119,31 @@ fn clipboard_sequence_number() -> u32 {
 }
 
 #[cfg(target_os = "windows")]
-fn wait_for_clipboard_change(sequence_before: u32) -> bool {
+fn wait_for_copied_text(sequence_before: u32) -> Option<Result<String, String>> {
     let started_at = std::time::Instant::now();
+    let mut clipboard_changed = false;
+    let mut last_read_error = None;
 
     while started_at.elapsed() < SELECTED_TEXT_COPY_TIMEOUT {
-        if clipboard_sequence_number() != sequence_before {
-            return true;
+        clipboard_changed = clipboard_changed || clipboard_sequence_number() != sequence_before;
+
+        if clipboard_changed {
+            match read_clipboard_text() {
+                Ok(text) => return Some(Ok(text)),
+                Err(error) => last_read_error = Some(error),
+            }
         }
 
         std::thread::sleep(SELECTED_TEXT_COPY_POLL_INTERVAL);
     }
 
-    false
+    if clipboard_changed {
+        Some(Err(last_read_error.unwrap_or_else(|| {
+            "Selected content was copied, but it did not contain readable text.".to_string()
+        })))
+    } else {
+        None
+    }
 }
 
 #[cfg(target_os = "windows")]
