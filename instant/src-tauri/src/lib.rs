@@ -11,6 +11,10 @@ const OVERLAY_WINDOW_LABEL: &str = "overlay";
 const TRAY_ID: &str = "instant-tray";
 const TRAY_TOGGLE_ID: &str = "toggle-overlay";
 const TRAY_QUIT_ID: &str = "quit-app";
+#[cfg(target_os = "windows")]
+const WINDOWS_PRIMARY_SHORTCUT: &str = "Ctrl+Alt+Space";
+#[cfg(target_os = "windows")]
+const WINDOWS_LEGACY_SHORTCUT: &str = "Ctrl+Shift+Space";
 const GEMINI_API_BASE_URL: &str = "https://generativelanguage.googleapis.com";
 const DEFAULT_GEMINI_API_VERSION: &str = "v1beta";
 const DEFAULT_GEMINI_MODEL: &str = "gemini-2.5-flash";
@@ -789,7 +793,7 @@ fn global_shortcut_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
     use tauri_plugin_global_shortcut::ShortcutState;
 
     tauri_plugin_global_shortcut::Builder::new()
-        .with_shortcuts(["ctrl+shift+space"])
+        .with_shortcuts(["ctrl+alt+space", "ctrl+shift+space"])
         .expect("failed to configure global shortcut")
         .with_handler(|app, _shortcut, event| {
             if event.state == ShortcutState::Released {
@@ -851,18 +855,16 @@ fn capture_selected_text_payload() -> CapturedContextPayload {
         },
         Err(SelectedTextCaptureError::ShortcutKeysStillHeld) => CapturedContextPayload {
             text: None,
-            error: Some(
-                "Release Ctrl+Shift+Space fully before the overlay opens. Capture was skipped to avoid triggering browser Inspect mode."
-                    .to_string(),
-            ),
+            error: Some(format!(
+                "Release {WINDOWS_PRIMARY_SHORTCUT} fully before the overlay opens. Capture was skipped to avoid triggering conflicting app shortcuts. Legacy shortcut: {WINDOWS_LEGACY_SHORTCUT}."
+            )),
             source: "selected_text",
         },
         Err(SelectedTextCaptureError::NoSelectedText) => CapturedContextPayload {
             text: None,
-            error: Some(
-                "No selected text was detected. Select text first, then press Ctrl+Shift+Space. For clipboard-only mode, use the tray icon."
-                    .to_string(),
-            ),
+            error: Some(format!(
+                "No selected text was detected. Select text first, then press {WINDOWS_PRIMARY_SHORTCUT}. Legacy shortcut: {WINDOWS_LEGACY_SHORTCUT}. For clipboard-only mode, use the tray icon."
+            )),
             source: "selected_text",
         },
         Err(error) => {
@@ -913,12 +915,15 @@ fn capture_selected_text_windows() -> Result<String, SelectedTextCaptureError> {
 
 #[cfg(target_os = "windows")]
 fn wait_for_shortcut_keys_released() -> bool {
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_SHIFT, VK_SPACE};
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        VK_CONTROL, VK_MENU, VK_SHIFT, VK_SPACE,
+    };
 
     let started_at = std::time::Instant::now();
 
     while started_at.elapsed() < SHORTCUT_KEYS_RELEASE_TIMEOUT {
         if !virtual_key_is_down(VK_CONTROL)
+            && !virtual_key_is_down(VK_MENU)
             && !virtual_key_is_down(VK_SHIFT)
             && !virtual_key_is_down(VK_SPACE)
         {

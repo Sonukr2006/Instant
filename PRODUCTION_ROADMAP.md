@@ -175,6 +175,7 @@ Implementation approach:
 
 Current implementation:
 - Windows shortcut now attempts selected-text capture before opening the overlay.
+- Windows primary shortcut is `Ctrl+Alt+Space`; legacy `Ctrl+Shift+Space` remains temporarily supported but conflicts with Word/Office and browser inspect shortcuts.
 - Windows capture uses native `SendInput` for `Ctrl+C`.
 - Clipboard sequence number is checked to detect whether copy actually happened.
 - Clipboard content is snapshotted and restored for safely readable Windows formats.
@@ -185,6 +186,7 @@ Current implementation:
 - The app no longer reads clipboard content while hidden at startup.
 - Focus events no longer clear the response or prompt.
 - Rapid Windows shortcut presses are guarded to avoid overlapping capture attempts.
+- Shortcut capture waits for modifier keys to be released before sending `Ctrl+C`, reducing app shortcut conflicts.
 - Windows GitHub Actions CI has been added to compile the native Windows path.
 
 Pending validation:
@@ -192,6 +194,7 @@ Pending validation:
 - Runtime test on an actual Windows machine.
 - Verify clipboard restore behavior with rich/non-text clipboard formats.
 - Verify shortcut behavior across Notepad, browsers, PDF readers, Office apps, and Electron apps.
+- Replace hardcoded shortcuts with user-configurable shortcuts before public production launch.
 
 Files likely involved:
 - `instant/src-tauri/src/lib.rs`
