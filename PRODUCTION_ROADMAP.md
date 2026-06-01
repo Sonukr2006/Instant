@@ -77,9 +77,12 @@ Infrastructure
 
 ## Phase 0 - Current Status
 
-Status: Incomplete
+Status: Updated snapshot
 
-Already working:
+Meaning:
+Phase 0 is not a build phase. It is the baseline snapshot of what exists today and what still blocks public launch.
+
+Completed foundation:
 - Tauri desktop app foundation
 - Overlay UI
 - Tray support
@@ -90,18 +93,25 @@ Already working:
 - Gemini response parsing
 - Secure token storage foundation
 - Basic Rust tests and clippy checks
+- Production mode blocks local Gemini fallback in release builds
+- Windows selected-text capture with UI Automation first and clipboard fallback second
+- Configurable Windows shortcut settings with validation and persistence
+- First-run privacy confirmation before sending prompt text to AI
+- Sanitized AI/provider failure messages
+- Windows GitHub Actions CI gate
 
-Still not production-ready:
-- No Windows selected-text capture
+Still blocking public production launch:
 - No true lightweight listener/main separation
-- Local Gemini fallback remains only for development/private builds
 - In-memory quota
 - Manual dev-token auth
 - Gemini-specific backend
 - No streaming response
 - No production monitoring
-- Stale architecture docs
 - No signed public build pipeline
+- No public privacy policy
+- No persistent database for users, sessions, billing, or quota
+- No production crash reporting/observability with strict redaction
+- Windows runtime regression testing is still required after each shortcut/capture change
 
 ## Phase 1 - Production Mode Cleanup
 
@@ -151,7 +161,7 @@ Test cases:
 
 ## Phase 2 - Windows Selected-Text Capture
 
-Status: In Progress
+Status: Implementation Complete, Validation In Progress
 
 Purpose:
 Deliver the core product workflow for Windows.
@@ -178,6 +188,7 @@ Current implementation:
 - Windows default shortcut is `Ctrl+Alt+Space`.
 - Users can change the shortcut from the overlay settings panel; saved shortcuts are applied on app restart.
 - Shortcut validation rejects empty shortcuts, single-modifier shortcuts, Windows-key shortcuts, and malformed multi-key shortcuts.
+- Windows capture tries UI Automation before clipboard-based copy, improving Word/Office reliability.
 - Windows capture uses native `SendInput` for `Ctrl+C`.
 - Clipboard sequence number is checked to detect whether copy actually happened.
 - Clipboard content is snapshotted and restored for safely readable Windows formats.
@@ -192,7 +203,7 @@ Current implementation:
 - Windows GitHub Actions CI has been added to compile the native Windows path.
 
 Pending validation:
-- Confirm the Windows CI workflow passes on GitHub.
+- Confirm the latest Windows CI workflow passes on GitHub after each push.
 - Runtime test on an actual Windows machine.
 - Verify clipboard restore behavior with rich/non-text clipboard formats.
 - Verify default and custom shortcut behavior across Notepad, browsers, PDF readers, Office apps, and Electron apps.
@@ -341,7 +352,7 @@ Test cases:
 - Downgraded subscription.
 - Deleted/banned user.
 
-## Phase 5 - Persistent Quota and Rate Limiting
+## Phase 6 - Persistent Quota and Rate Limiting
 
 Status: Incomplete
 
@@ -380,7 +391,7 @@ Test cases:
 - AI 429/5xx response.
 - Daily reset.
 
-## Phase 6 - AI Provider Abstraction
+## Phase 7 - AI Provider Abstraction
 
 Status: Incomplete
 
@@ -416,7 +427,7 @@ Test cases:
 - Provider rate limit.
 - Provider malformed response.
 
-## Phase 7 - Streaming Response and Cancel
+## Phase 8 - Streaming Response and Cancel
 
 Status: Incomplete
 
@@ -448,7 +459,7 @@ Test cases:
 - Retry after timeout.
 - Hide/show overlay during stream.
 
-## Phase 8 - Privacy and Security Hardening
+## Phase 9 - Privacy and Security Hardening
 
 Status: Incomplete
 
@@ -483,7 +494,7 @@ Test cases:
 - Provider error does not expose API key.
 - Security audit passes.
 
-## Phase 9 - Observability and Operations
+## Phase 10 - Observability and Operations
 
 Status: Incomplete
 
@@ -517,7 +528,7 @@ Test cases:
 - Request ID appears across logs.
 - No private prompt data appears in logs.
 
-## Phase 10 - Production Packaging and Release
+## Phase 11 - Production Packaging and Release
 
 Status: Incomplete
 
