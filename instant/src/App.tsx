@@ -14,6 +14,13 @@ type CapturedContextEvent = {
   source: "selected_text" | "clipboard";
 };
 
+type ShortcutSettings = {
+  shortcut: string;
+  shortcutLabel: string;
+  defaultShortcut: string;
+  defaultShortcutLabel: string;
+};
+
 function formatError(error: unknown, fallback: string) {
   if (error instanceof Error) {
     return error.message;
@@ -61,6 +68,11 @@ function App() {
   const [authPanelOpen, setAuthPanelOpen] = useState(false);
   const [privacyConsentAccepted, setPrivacyConsentAccepted] = useState(readStoredPrivacyConsent);
   const [privacyPanelOpen, setPrivacyPanelOpen] = useState(false);
+  const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
+  const [shortcutInput, setShortcutInput] = useState("");
+  const [shortcutSettings, setShortcutSettings] = useState<ShortcutSettings | null>(null);
+  const [shortcutSaving, setShortcutSaving] = useState(false);
+  const [shortcutStatus, setShortcutStatus] = useState("");
   const userEditedPromptRef = useRef(false);
   const aiRequestIdRef = useRef(0);
   const aiLoadingRef = useRef(false);
@@ -178,6 +190,26 @@ function App() {
     }
   }
 
+  async function handleSaveShortcut(shortcut: string) {
+    try {
+      setShortcutSaving(true);
+      setShortcutStatus("");
+
+      const settings = await invoke<ShortcutSettings>("save_shortcut_settings", { shortcut });
+
+      setShortcutSettings(settings);
+      setShortcutInput(settings.shortcut);
+      setShortcutStatus(`Shortcut saved: ${settings.shortcutLabel}`);
+    } catch (error) {
+      const message = formatError(error, "Unable to save shortcut.");
+
+      reportClientError("Failed to save shortcut.");
+      setShortcutStatus(message);
+    } finally {
+      setShortcutSaving(false);
+    }
+  }
+
   useEffect(() => {
     let isDisposed = false;
 
@@ -196,6 +228,27 @@ function App() {
         if (!isDisposed) {
           setErrorMessage(message);
         }
+      });
+
+    return () => {
+      isDisposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let isDisposed = false;
+
+    void invoke<ShortcutSettings>("get_shortcut_settings")
+      .then((settings) => {
+        if (isDisposed) {
+          return;
+        }
+
+        setShortcutSettings(settings);
+        setShortcutInput(settings.shortcut);
+      })
+      .catch(() => {
+        reportClientError("Failed to load shortcut settings.");
       });
 
     return () => {
@@ -293,6 +346,15 @@ function App() {
             {isAuthenticated ? "●" : "○"}
           </button>
           <button
+            className={`settings-btn${settingsPanelOpen ? " active" : ""}`}
+            type="button"
+            onClick={() => setSettingsPanelOpen((current) => !current)}
+            aria-label="Shortcut settings"
+            title="Shortcut settings"
+          >
+            ⚙
+          </button>
+          <button
             className="refresh-btn"
             type="button"
             onClick={() => void fetchClipboardText({ force: true })}
@@ -333,6 +395,49 @@ function App() {
                   </button>
                 </>
               )}
+            </section>
+          ) : null}
+
+          {settingsPanelOpen ? (
+            <section className="settings-panel" aria-label="Shortcut settings">
+              <div className="settings-copy">
+                <span className="settings-label">Windows shortcut</span>
+                <span className="settings-current">
+                  Active: {shortcutSettings?.shortcutLabel ?? "Ctrl + Alt + Space"}
+                </span>
+              </div>
+              <div className="shortcut-controls">
+                <input
+                  className="shortcut-input"
+                  value={shortcutInput}
+                  onChange={(event) => {
+                    setShortcutInput(event.currentTarget.value);
+                    setShortcutStatus("");
+                  }}
+                  placeholder="ctrl+alt+space"
+                  aria-label="Windows shortcut"
+                  spellCheck={false}
+                />
+                <button
+                  className="settings-action-btn"
+                  type="button"
+                  onClick={() => void handleSaveShortcut(shortcutInput)}
+                  disabled={shortcutSaving || !shortcutInput.trim()}
+                >
+                  Save
+                </button>
+                <button
+                  className="settings-action-btn secondary"
+                  type="button"
+                  onClick={() =>
+                    void handleSaveShortcut(shortcutSettings?.defaultShortcut ?? "ctrl+alt+space")
+                  }
+                  disabled={shortcutSaving}
+                >
+                  Default
+                </button>
+              </div>
+              {shortcutStatus ? <p className="settings-status">{shortcutStatus}</p> : null}
             </section>
           ) : null}
 

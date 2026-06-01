@@ -16,7 +16,7 @@
    │  Shortcut   │────────▶│   Window     │
    │  Listener   │         │  (Hidden)    │
    └─────────────┘         └──────────────┘
-   (Ctrl+Alt+Space primary)      │
+   (Ctrl+Alt+Space default)      │
         │                         │
         │                    Press hotkey to show
         │                         │
@@ -103,7 +103,7 @@ split-debuginfo = "packed"# Pack debug info efficiently
 ## Global Shortcut Flow Diagram
 
 ```
-User presses Ctrl+Alt+Space
+User presses configured shortcut
         │
         ▼
 ┌─────────────────────────┐

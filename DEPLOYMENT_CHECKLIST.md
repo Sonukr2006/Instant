@@ -11,6 +11,7 @@
 - [ ] Third-party provider error bodies are not shown directly to users
 - [ ] Async operations properly handled with `.await`
 - [ ] Global shortcut registration wrapped in error handling
+- [ ] Custom shortcut registration failure restores the previous working shortcut
 
 ### React Frontend
 - [ ] All API calls wrapped in try-catch
@@ -35,6 +36,7 @@
 - [ ] Startup time measured (<500ms)
 - [ ] Memory footprint tested (<30MB idle)
 - [ ] Global shortcut latency acceptable (<100ms)
+- [ ] Custom shortcut save/reset flow tested
 - [ ] No memory leaks detected during extended use
 
 ### Security

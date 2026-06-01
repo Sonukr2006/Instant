@@ -11,10 +11,7 @@ const OVERLAY_WINDOW_LABEL: &str = "overlay";
 const TRAY_ID: &str = "instant-tray";
 const TRAY_TOGGLE_ID: &str = "toggle-overlay";
 const TRAY_QUIT_ID: &str = "quit-app";
-#[cfg(target_os = "windows")]
-const WINDOWS_PRIMARY_SHORTCUT: &str = "Ctrl+Alt+Space";
-#[cfg(target_os = "windows")]
-const WINDOWS_LEGACY_SHORTCUT: &str = "Ctrl+Shift+Space";
+const WINDOWS_DEFAULT_SHORTCUT: &str = "ctrl+alt+space";
 const GEMINI_API_BASE_URL: &str = "https://generativelanguage.googleapis.com";
 const DEFAULT_GEMINI_API_VERSION: &str = "v1beta";
 const DEFAULT_GEMINI_MODEL: &str = "gemini-2.5-flash";
@@ -24,6 +21,7 @@ const MAX_ERROR_DETAIL_CHARS: usize = 1_500;
 const GEMINI_SERVICE_NAME: &str = "Gemini API";
 const INSTANT_BACKEND_SERVICE_NAME: &str = "Instant backend";
 const AI_CONFIG_FILE_NAME: &str = "instant-ai-context.json";
+const APP_SETTINGS_FILE_NAME: &str = "instant-settings.json";
 #[cfg(any(debug_assertions, test))]
 const APP_MODE_ENV: &str = "INSTANT_APP_MODE";
 const CONTEXT_CAPTURED_EVENT: &str = "context-captured";
@@ -134,6 +132,12 @@ struct AiState {
     client: reqwest::Client,
 }
 
+#[derive(Default)]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+struct ShortcutSettingsState {
+    active_shortcut: std::sync::Mutex<Option<String>>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AppMode {
     #[cfg(any(debug_assertions, test))]
@@ -167,6 +171,20 @@ struct CapturedContextPayload {
     text: Option<String>,
     error: Option<String>,
     source: &'static str,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ShortcutSettings {
+    shortcut: String,
+    shortcut_label: String,
+    default_shortcut: String,
+    default_shortcut_label: String,
+}
+
+#[derive(Default, serde::Deserialize, serde::Serialize)]
+struct AppSettingsFile {
+    windows_shortcut: Option<String>,
 }
 
 #[cfg(target_os = "windows")]
@@ -245,6 +263,26 @@ impl From<String> for SelectedTextCaptureError {
 #[tauri::command]
 fn get_clipboard_text() -> Result<String, String> {
     read_clipboard_text()
+}
+
+#[tauri::command]
+fn get_shortcut_settings(app: AppHandle) -> Result<ShortcutSettings, String> {
+    Ok(shortcut_settings_payload(resolve_configured_shortcut(&app)))
+}
+
+#[tauri::command]
+fn save_shortcut_settings(shortcut: String, app: AppHandle) -> Result<ShortcutSettings, String> {
+    let normalized_shortcut = normalize_shortcut_input(&shortcut)?;
+
+    apply_shortcut_settings(&app, &normalized_shortcut)?;
+    write_app_settings_file(
+        &app,
+        AppSettingsFile {
+            windows_shortcut: Some(normalized_shortcut.clone()),
+        },
+    )?;
+
+    Ok(shortcut_settings_payload(normalized_shortcut))
 }
 
 #[tauri::command]
@@ -627,6 +665,233 @@ fn ai_config_file_path(app: &AppHandle) -> Option<std::path::PathBuf> {
         .map(|directory| directory.join(AI_CONFIG_FILE_NAME))
 }
 
+fn read_app_settings_file(app: &AppHandle) -> AppSettingsFile {
+    let Some(path) = app_settings_file_path(app) else {
+        return AppSettingsFile::default();
+    };
+
+    if !path.exists() {
+        return AppSettingsFile::default();
+    }
+
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(error) => {
+            log::warn!(
+                "Failed to read app settings file {}: {}",
+                path.display(),
+                error
+            );
+            return AppSettingsFile::default();
+        }
+    };
+
+    match serde_json::from_str::<AppSettingsFile>(&contents) {
+        Ok(settings) => settings,
+        Err(error) => {
+            log::warn!(
+                "Failed to parse app settings file {}: {}",
+                path.display(),
+                error
+            );
+            AppSettingsFile::default()
+        }
+    }
+}
+
+fn write_app_settings_file(app: &AppHandle, settings: AppSettingsFile) -> Result<(), String> {
+    let path = app_settings_file_path(app)
+        .ok_or_else(|| "Failed to resolve app settings file path.".to_string())?;
+    let directory = path
+        .parent()
+        .ok_or_else(|| "Failed to resolve app settings directory.".to_string())?;
+
+    std::fs::create_dir_all(directory)
+        .map_err(|error| format!("Failed to create app settings directory: {error}"))?;
+
+    let contents = serde_json::to_string_pretty(&settings)
+        .map_err(|error| format!("Failed to serialize app settings: {error}"))?;
+
+    std::fs::write(&path, contents).map_err(|error| format!("Failed to save app settings: {error}"))
+}
+
+fn app_settings_file_path(app: &AppHandle) -> Option<std::path::PathBuf> {
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|directory| directory.join(APP_SETTINGS_FILE_NAME))
+}
+
+fn resolve_configured_shortcut(app: &AppHandle) -> String {
+    let settings = read_app_settings_file(app);
+
+    settings
+        .windows_shortcut
+        .as_deref()
+        .and_then(|shortcut| match normalize_shortcut_input(shortcut) {
+            Ok(shortcut) => Some(shortcut),
+            Err(error) => {
+                log::warn!("Ignoring invalid saved shortcut: {}", error);
+                None
+            }
+        })
+        .unwrap_or_else(|| WINDOWS_DEFAULT_SHORTCUT.to_string())
+}
+
+fn shortcut_settings_payload(shortcut: String) -> ShortcutSettings {
+    ShortcutSettings {
+        shortcut_label: shortcut_label(&shortcut),
+        shortcut,
+        default_shortcut: WINDOWS_DEFAULT_SHORTCUT.to_string(),
+        default_shortcut_label: shortcut_label(WINDOWS_DEFAULT_SHORTCUT),
+    }
+}
+
+fn normalize_shortcut_input(input: &str) -> Result<String, String> {
+    let parts = input
+        .split('+')
+        .map(|part| part.trim())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+
+    if parts.is_empty() {
+        return Err("Shortcut cannot be empty.".to_string());
+    }
+
+    let mut has_ctrl = false;
+    let mut has_alt = false;
+    let mut has_shift = false;
+    let mut key = None;
+
+    for part in parts {
+        match part.to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => {
+                if has_ctrl {
+                    return Err("Shortcut contains Ctrl more than once.".to_string());
+                }
+                has_ctrl = true;
+            }
+            "alt" | "option" => {
+                if has_alt {
+                    return Err("Shortcut contains Alt more than once.".to_string());
+                }
+                has_alt = true;
+            }
+            "shift" => {
+                if has_shift {
+                    return Err("Shortcut contains Shift more than once.".to_string());
+                }
+                has_shift = true;
+            }
+            "cmd" | "command" | "super" | "win" | "windows" => {
+                return Err(
+                    "Use Ctrl, Alt, or Shift only. Windows-key shortcuts often conflict with the OS."
+                        .to_string(),
+                );
+            }
+            candidate => {
+                if key.is_some() {
+                    return Err("Shortcut must contain exactly one main key.".to_string());
+                }
+
+                key = Some(normalize_shortcut_key(candidate)?);
+            }
+        }
+    }
+
+    let modifier_count = [has_ctrl, has_alt, has_shift]
+        .into_iter()
+        .filter(|enabled| *enabled)
+        .count();
+
+    if modifier_count < 2 {
+        return Err(
+            "Shortcut must use at least two modifiers, for example Ctrl+Alt+Space.".to_string(),
+        );
+    }
+
+    let Some(key) = key else {
+        return Err("Shortcut must include one main key.".to_string());
+    };
+
+    let mut normalized = Vec::new();
+
+    if has_ctrl {
+        normalized.push("ctrl");
+    }
+    if has_alt {
+        normalized.push("alt");
+    }
+    if has_shift {
+        normalized.push("shift");
+    }
+
+    normalized.push(&key);
+    let normalized = normalized.join("+");
+
+    validate_shortcut_parseable(&normalized)?;
+
+    Ok(normalized)
+}
+
+fn normalize_shortcut_key(key: &str) -> Result<String, String> {
+    let key = key.trim().to_ascii_lowercase();
+
+    if key.len() == 1 {
+        let character = key.chars().next().expect("single-character key");
+
+        if character.is_ascii_alphanumeric() {
+            return Ok(character.to_string());
+        }
+    }
+
+    if matches!(key.as_str(), "space" | "insert" | "tab" | "escape" | "esc") {
+        return Ok(if key == "esc" {
+            "escape".to_string()
+        } else {
+            key
+        });
+    }
+
+    if let Some(number) = key
+        .strip_prefix('f')
+        .and_then(|value| value.parse::<u8>().ok())
+    {
+        if (1..=12).contains(&number) {
+            return Ok(format!("f{number}"));
+        }
+    }
+
+    Err("Shortcut main key must be A-Z, 0-9, Space, Insert, Tab, Escape, or F1-F12.".to_string())
+}
+
+fn validate_shortcut_parseable(shortcut: &str) -> Result<(), String> {
+    use std::str::FromStr;
+
+    tauri_plugin_global_shortcut::Shortcut::from_str(shortcut)
+        .map(|_| ())
+        .map_err(|error| {
+            format!("Shortcut is not supported by the operating system parser: {error}")
+        })
+}
+
+fn shortcut_label(shortcut: &str) -> String {
+    shortcut
+        .split('+')
+        .map(|part| match part {
+            "ctrl" => "Ctrl".to_string(),
+            "alt" => "Alt".to_string(),
+            "shift" => "Shift".to_string(),
+            "space" => "Space".to_string(),
+            "insert" => "Insert".to_string(),
+            "tab" => "Tab".to_string(),
+            "escape" => "Escape".to_string(),
+            key => key.to_ascii_uppercase(),
+        })
+        .collect::<Vec<_>>()
+        .join(" + ")
+}
+
 fn clean_optional(value: &Option<String>) -> Option<String> {
     value
         .as_ref()
@@ -833,8 +1098,6 @@ fn global_shortcut_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
     use tauri_plugin_global_shortcut::ShortcutState;
 
     tauri_plugin_global_shortcut::Builder::new()
-        .with_shortcuts(["ctrl+alt+space", "ctrl+shift+space"])
-        .expect("failed to configure global shortcut")
         .with_handler(|app, _shortcut, event| {
             if event.state == ShortcutState::Released {
                 if let Err(error) = handle_windows_global_shortcut(app) {
@@ -843,6 +1106,131 @@ fn global_shortcut_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
             }
         })
         .build()
+}
+
+#[cfg(target_os = "windows")]
+fn initialize_windows_shortcut(app: &AppHandle) {
+    let shortcut = resolve_configured_shortcut(app);
+
+    if let Err(error) = replace_active_windows_shortcut(app, &shortcut) {
+        log::error!(
+            "Failed to register configured shortcut {}: {}",
+            shortcut_label(&shortcut),
+            error
+        );
+
+        if shortcut != WINDOWS_DEFAULT_SHORTCUT {
+            if let Err(error) = replace_active_windows_shortcut(app, WINDOWS_DEFAULT_SHORTCUT) {
+                log::error!(
+                    "Failed to register default shortcut {}: {}",
+                    shortcut_label(WINDOWS_DEFAULT_SHORTCUT),
+                    error
+                );
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn initialize_windows_shortcut(_app: &AppHandle) {}
+
+fn apply_shortcut_settings(app: &AppHandle, shortcut: &str) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        replace_active_windows_shortcut(app, shortcut)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+        let _ = shortcut;
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn replace_active_windows_shortcut(app: &AppHandle, shortcut: &str) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+    let normalized_shortcut = normalize_shortcut_input(shortcut)?;
+    let state = app.state::<ShortcutSettingsState>();
+    let current_shortcut = state
+        .active_shortcut
+        .lock()
+        .map_err(|_| "Shortcut state lock is unavailable.".to_string())?
+        .clone();
+
+    if current_shortcut.as_deref() == Some(normalized_shortcut.as_str()) {
+        return Ok(());
+    }
+
+    if let Some(current_shortcut) = current_shortcut.as_deref() {
+        app.global_shortcut()
+            .unregister(current_shortcut)
+            .map_err(|error| {
+                format!(
+                    "Failed to unregister previous shortcut {}: {error}",
+                    shortcut_label(current_shortcut)
+                )
+            })?;
+    }
+
+    if let Err(error) =
+        app.global_shortcut()
+            .on_shortcut(normalized_shortcut.as_str(), |app, _shortcut, event| {
+                if event.state == tauri_plugin_global_shortcut::ShortcutState::Released {
+                    if let Err(error) = handle_windows_global_shortcut(app) {
+                        log::error!("Failed to toggle overlay from global shortcut: {}", error);
+                    }
+                }
+            })
+    {
+        if let Some(current_shortcut) = current_shortcut.as_deref() {
+            if let Err(restore_error) =
+                app.global_shortcut()
+                    .on_shortcut(current_shortcut, |app, _shortcut, event| {
+                        if event.state == tauri_plugin_global_shortcut::ShortcutState::Released {
+                            if let Err(error) = handle_windows_global_shortcut(app) {
+                                log::error!(
+                                    "Failed to toggle overlay from global shortcut: {}",
+                                    error
+                                );
+                            }
+                        }
+                    })
+            {
+                log::error!(
+                    "Failed to restore previous shortcut {} after registration failure: {}",
+                    shortcut_label(current_shortcut),
+                    restore_error
+                );
+            }
+        }
+
+        return Err(format!(
+            "Failed to register shortcut {}. It may already be used by another app. {error}",
+            shortcut_label(&normalized_shortcut)
+        ));
+    }
+
+    let mut active_shortcut = state
+        .active_shortcut
+        .lock()
+        .map_err(|_| "Shortcut state lock is unavailable.".to_string())?;
+    *active_shortcut = Some(normalized_shortcut);
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn active_shortcut_label(app: &AppHandle) -> String {
+    app.state::<ShortcutSettingsState>()
+        .active_shortcut
+        .lock()
+        .ok()
+        .and_then(|shortcut| shortcut.clone())
+        .map(|shortcut| shortcut_label(&shortcut))
+        .unwrap_or_else(|| shortcut_label(WINDOWS_DEFAULT_SHORTCUT))
 }
 
 #[cfg(target_os = "windows")]
@@ -878,7 +1266,7 @@ fn handle_windows_global_shortcut_inner(app: &AppHandle) -> Result<(), String> {
     }
 
     std::thread::sleep(SHORTCUT_RELEASE_SETTLE_DELAY);
-    let payload = capture_selected_text_payload(&window);
+    let payload = capture_selected_text_payload(app, &window);
     show_and_focus_window(&window)?;
     emit_context_payload(app, payload);
 
@@ -886,7 +1274,12 @@ fn handle_windows_global_shortcut_inner(app: &AppHandle) -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
-fn capture_selected_text_payload(window: &WebviewWindow) -> CapturedContextPayload {
+fn capture_selected_text_payload(
+    app: &AppHandle,
+    window: &WebviewWindow,
+) -> CapturedContextPayload {
+    let shortcut_label = active_shortcut_label(app);
+
     match capture_selected_text_windows(window) {
         Ok(text) => CapturedContextPayload {
             text: Some(text),
@@ -896,14 +1289,14 @@ fn capture_selected_text_payload(window: &WebviewWindow) -> CapturedContextPaylo
         Err(SelectedTextCaptureError::ShortcutKeysStillHeld) => CapturedContextPayload {
             text: None,
             error: Some(format!(
-                "Release {WINDOWS_PRIMARY_SHORTCUT} fully before the overlay opens. Capture was skipped to avoid triggering conflicting app shortcuts. Legacy shortcut: {WINDOWS_LEGACY_SHORTCUT}."
+                "Release {shortcut_label} fully before the overlay opens. Capture was skipped to avoid triggering conflicting app shortcuts."
             )),
             source: "selected_text",
         },
         Err(SelectedTextCaptureError::NoSelectedText) => CapturedContextPayload {
             text: None,
             error: Some(format!(
-                "No selected text was detected. Select text first, then press {WINDOWS_PRIMARY_SHORTCUT}. Legacy shortcut: {WINDOWS_LEGACY_SHORTCUT}. For clipboard-only mode, use the tray icon."
+                "No selected text was detected. Select text first, then press {shortcut_label}. For clipboard-only mode, use the tray icon."
             )),
             source: "selected_text",
         },
@@ -1510,6 +1903,7 @@ pub fn run() {
 
     let builder = tauri::Builder::default()
         .manage(ai_state())
+        .manage(ShortcutSettingsState::default())
         .plugin(single_instance_plugin())
         .plugin(log_plugin())
         .plugin(tauri_plugin_opener::init());
@@ -1520,6 +1914,7 @@ pub fn run() {
     builder
         .setup(|app| {
             install_tray(app)?;
+            initialize_windows_shortcut(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| match event {
@@ -1540,9 +1935,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             clear_auth_session,
             get_clipboard_text,
+            get_shortcut_settings,
             get_auth_session,
             fetch_ai_response,
             save_auth_session,
+            save_shortcut_settings,
             toggle_overlay
         ])
         .run(tauri::generate_context!())
@@ -1625,5 +2022,25 @@ mod tests {
         assert!(message.contains("rejected the request credentials"));
         assert!(!message.contains("AIza"));
         assert!(!message.contains("selected text"));
+    }
+
+    #[test]
+    fn shortcut_normalization_accepts_supported_format() {
+        assert_eq!(
+            normalize_shortcut_input(" Control + Alt + Space ").expect("valid shortcut"),
+            "ctrl+alt+space"
+        );
+        assert_eq!(
+            normalize_shortcut_input("shift+ctrl+x").expect("valid shortcut"),
+            "ctrl+shift+x"
+        );
+    }
+
+    #[test]
+    fn shortcut_normalization_rejects_risky_shortcuts() {
+        assert!(normalize_shortcut_input("ctrl+c").is_err());
+        assert!(normalize_shortcut_input("ctrl+alt").is_err());
+        assert!(normalize_shortcut_input("win+alt+space").is_err());
+        assert!(normalize_shortcut_input("ctrl+alt+space+x").is_err());
     }
 }

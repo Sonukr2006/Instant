@@ -175,7 +175,9 @@ Implementation approach:
 
 Current implementation:
 - Windows shortcut now attempts selected-text capture before opening the overlay.
-- Windows primary shortcut is `Ctrl+Alt+Space`; legacy `Ctrl+Shift+Space` remains temporarily supported but conflicts with Word/Office and browser inspect shortcuts.
+- Windows default shortcut is `Ctrl+Alt+Space`.
+- Users can change the shortcut from the overlay settings panel; saved shortcuts are applied on app restart.
+- Shortcut validation rejects empty shortcuts, single-modifier shortcuts, Windows-key shortcuts, and malformed multi-key shortcuts.
 - Windows capture uses native `SendInput` for `Ctrl+C`.
 - Clipboard sequence number is checked to detect whether copy actually happened.
 - Clipboard content is snapshotted and restored for safely readable Windows formats.
@@ -193,8 +195,8 @@ Pending validation:
 - Confirm the Windows CI workflow passes on GitHub.
 - Runtime test on an actual Windows machine.
 - Verify clipboard restore behavior with rich/non-text clipboard formats.
-- Verify shortcut behavior across Notepad, browsers, PDF readers, Office apps, and Electron apps.
-- Replace hardcoded shortcuts with user-configurable shortcuts before public production launch.
+- Verify default and custom shortcut behavior across Notepad, browsers, PDF readers, Office apps, and Electron apps.
+- Confirm conflict handling restores the previous registered shortcut if a new shortcut cannot be registered.
 
 Files likely involved:
 - `instant/src-tauri/src/lib.rs`
@@ -235,7 +237,6 @@ Current implementation:
 - First AI request requires explicit privacy confirmation before prompt text is sent.
 
 Remaining work:
-- Add configurable shortcuts instead of hardcoded shortcuts.
 - Add opt-in crash reporting with strict redaction.
 - Add structured backend request IDs without logging prompt bodies.
 - Add persistent quota storage before public launch.
@@ -262,6 +263,7 @@ Test cases:
 - Clipboard with non-text data.
 - Production frontend error path.
 - First AI request before privacy confirmation.
+- Custom shortcut save/reset flow.
 
 ## Phase 4 - Linux Wayland-Safe Workflow
 
