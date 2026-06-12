@@ -4,6 +4,7 @@ use serde::Serialize;
 
 const MIN_JWT_SECRET_BYTES: usize = 32;
 const MAX_TOKEN_DAYS: i64 = 365;
+const DEV_TOKEN_MINT_ENV: &str = "ALLOW_DEV_TOKEN_MINTING";
 
 #[derive(Serialize)]
 struct Claims {
@@ -27,6 +28,7 @@ fn main() {
 
 fn run() -> Result<(), String> {
     dotenvy::dotenv().ok();
+    require_dev_token_minting_enabled()?;
 
     let jwt_secret = required_secret_env("JWT_SECRET")?;
     let user_id = std::env::args()
@@ -61,6 +63,16 @@ fn run() -> Result<(), String> {
     println!("{token}");
 
     Ok(())
+}
+
+fn require_dev_token_minting_enabled() -> Result<(), String> {
+    if env_flag_enabled(DEV_TOKEN_MINT_ENV) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{DEV_TOKEN_MINT_ENV}=true is required because mint_token is a development-only helper."
+        ))
+    }
 }
 
 fn required_secret_env(key: &str) -> Result<String, String> {
@@ -137,6 +149,18 @@ fn read_optional_env(key: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn env_flag_enabled(key: &str) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,5 +190,10 @@ mod tests {
             "replace_with_at_least_32_random_bytes_before_running"
         )
         .is_err());
+    }
+
+    #[test]
+    fn dev_token_minting_env_name_is_explicit() {
+        assert_eq!(DEV_TOKEN_MINT_ENV, "ALLOW_DEV_TOKEN_MINTING");
     }
 }

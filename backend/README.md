@@ -19,6 +19,8 @@ cargo run
 Required environment values:
 
 - `JWT_SECRET`
+- `AUTH_USER_DIRECTORY`
+- `AUTH_STATIC_USERS` when `AUTH_USER_DIRECTORY=static`
 - `GEMINI_API_KEY`
 
 ## Connect The Tauri App
@@ -34,7 +36,24 @@ Create a dev JWT for the desktop app:
 
 ```bash
 cd backend
-cargo run --bin mint_token -- dev-user free 30
+ALLOW_DEV_TOKEN_MINTING=true cargo run --bin mint_token -- dev-user free 30
+```
+
+For local development, make sure the token subject exists in the server-side user directory:
+
+```bash
+AUTH_USER_DIRECTORY=static
+AUTH_STATIC_USERS=dev-user:free
+```
+
+`mint_token` is intentionally guarded by `ALLOW_DEV_TOKEN_MINTING=true`. Keep it disabled in production.
+
+Development-only JWT claim mode is also available for quick local tests:
+
+```bash
+AUTH_USER_DIRECTORY=jwt_claims_dev
+ALLOW_DEV_JWT_AUTH=true
+ALLOW_DEV_TOKEN_MINTING=true cargo run --bin mint_token -- dev-user free 30
 ```
 
 Set these in `instant/.env`:
@@ -86,8 +105,10 @@ JWT claims expected:
 }
 ```
 
+In the default `AUTH_USER_DIRECTORY=static` mode, the backend uses `sub` only to find the user in `AUTH_STATIC_USERS`; plan/subscription is loaded server-side and the JWT `plan` claim is not trusted as the source of truth. `plan` remains in dev tokens only for `jwt_claims_dev` local testing.
+
 ## Production Notes
 
-This is a deployable MVP foundation. For multi-server production, replace the in-memory quota map with PostgreSQL or Redis so usage limits are shared across instances.
+This is a deployable MVP foundation. For public production, replace `AUTH_STATIC_USERS` with a database-backed user/session directory and replace the in-memory quota map with PostgreSQL or Redis so usage limits are shared across instances.
 
 The `mint_token` binary is a development helper only. Public production auth should issue and revoke user sessions through a real auth flow, then load plan/subscription state server-side.

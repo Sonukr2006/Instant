@@ -98,12 +98,13 @@ Completed foundation:
 - Configurable Windows shortcut settings with validation and persistence
 - First-run privacy confirmation before sending prompt text to AI
 - Sanitized AI/provider failure messages
+- Backend auth module boundary with server-side static user directory foundation
 - Windows GitHub Actions CI gate
 
 Still blocking public production launch:
 - No true lightweight listener/main separation
 - In-memory quota
-- Manual dev-token auth
+- Manual dev-token auth remains for local testing only; public login/session issuance is still missing
 - Gemini-specific backend
 - No streaming response
 - No production monitoring
@@ -314,7 +315,7 @@ Test cases:
 
 ## Phase 5 - Real Authentication
 
-Status: Incomplete
+Status: In Progress
 
 Purpose:
 Replace dev JWT minting with public-user authentication.
@@ -328,8 +329,16 @@ Required:
 - Server-side plan/subscription lookup.
 
 Current risk:
-- `mint_token.rs` is useful for development only.
-- Backend trusts JWT `plan`.
+- `mint_token.rs` is useful for development only and now requires explicit opt-in.
+- Backend has a server-side user directory boundary, but it is still static/env-backed.
+- Public users still need real login/session issuance and revocation.
+
+Current implementation:
+- Auth code is split into a backend `auth` module.
+- JWT validation is separated from user/plan lookup.
+- Default auth mode uses `AUTH_STATIC_USERS` so plan is loaded server-side instead of trusting JWT `plan`.
+- Development-only JWT claim mode requires `AUTH_USER_DIRECTORY=jwt_claims_dev` and `ALLOW_DEV_JWT_AUTH=true`.
+- The `mint_token` helper requires `ALLOW_DEV_TOKEN_MINTING=true`.
 
 Files likely involved:
 - `backend/src/main.rs`

@@ -1,5 +1,8 @@
+mod auth;
+
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
+use auth::{AuthUser, JwtConfig, UserDirectory, UserPlan};
 use axum::{
     async_trait,
     extract::{FromRequestParts, State},
@@ -10,7 +13,6 @@ use axum::{
 };
 use chrono::Utc;
 use dashmap::DashMap;
-use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -22,7 +24,6 @@ const DEFAULT_BIND_ADDR: &str = "127.0.0.1:8080";
 const DEFAULT_FREE_DAILY_LIMIT: u32 = 20;
 const DEFAULT_PRO_DAILY_LIMIT: u32 = 500;
 const DEFAULT_MAX_PROMPT_CHARS: usize = 60_000;
-const MIN_JWT_SECRET_BYTES: usize = 32;
 const GEMINI_SERVICE_NAME: &str = "Gemini API";
 const AI_SYSTEM_PROMPT: &str = "You are a smart, adaptive developer assistant.
 Analyze the incoming user payload before choosing a response style.
@@ -41,9 +42,8 @@ struct AppState {
 #[derive(Clone)]
 struct AppConfig {
     bind_addr: SocketAddr,
-    jwt_secret: String,
-    jwt_issuer: Option<String>,
-    jwt_audience: Option<String>,
+    jwt: JwtConfig,
+    user_directory: UserDirectory,
     gemini_api_key: String,
     gemini_model: String,
     gemini_api_version: String,
@@ -72,33 +72,6 @@ struct AskResponse {
 #[derive(Debug, Serialize)]
 struct HealthResponse {
     status: &'static str,
-}
-
-#[derive(Debug, Deserialize)]
-struct Claims {
-    sub: String,
-    #[serde(rename = "exp")]
-    _exp: usize,
-    #[serde(rename = "iss")]
-    _iss: Option<String>,
-    #[serde(rename = "aud")]
-    _aud: Option<String>,
-    #[serde(rename = "jti")]
-    _jti: Option<String>,
-    plan: Option<UserPlan>,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum UserPlan {
-    Free,
-    Pro,
-}
-
-#[derive(Debug, Clone)]
-struct AuthUser {
-    id: String,
-    plan: UserPlan,
 }
 
 #[derive(Debug, Clone)]
@@ -209,14 +182,18 @@ impl AppConfig {
         let bind_addr = read_env_or_default("BIND_ADDR", DEFAULT_BIND_ADDR)
             .parse::<SocketAddr>()
             .map_err(|error| ApiError::Internal(format!("Invalid BIND_ADDR: {error}")))?;
-        let jwt_secret = required_secret_env("JWT_SECRET")?;
+        let jwt = JwtConfig {
+            secret: auth::required_secret_env("JWT_SECRET").map_err(ApiError::Internal)?,
+            issuer: read_optional_env("JWT_ISSUER"),
+            audience: read_optional_env("JWT_AUDIENCE"),
+        };
+        let user_directory = UserDirectory::from_env().map_err(ApiError::Internal)?;
         let gemini_api_key = required_env("GEMINI_API_KEY")?;
 
         Ok(Self {
             bind_addr,
-            jwt_secret,
-            jwt_issuer: read_optional_env("JWT_ISSUER"),
-            jwt_audience: read_optional_env("JWT_AUDIENCE"),
+            jwt,
+            user_directory,
             gemini_api_key,
             gemini_model: read_env_or_default("GEMINI_MODEL", DEFAULT_GEMINI_MODEL),
             gemini_api_version: read_env_or_default(
@@ -472,27 +449,15 @@ impl FromRequestParts<AppState> for AuthUser {
             .await
             .map_err(|_| ApiError::Internal("Failed to resolve app state.".to_string()))?;
 
-        let token = parts
+        let auth_header = parts
             .headers
             .get(AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix("Bearer "))
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| ApiError::Unauthorized("Missing bearer token.".to_string()))?;
+            .and_then(|value| value.to_str().ok());
+        let token = auth::bearer_token_from_header(auth_header)
+            .map_err(|error| ApiError::Unauthorized(error.user_message().to_string()))?;
 
-        let claims = decode::<Claims>(
-            token,
-            &DecodingKey::from_secret(state.config.jwt_secret.as_bytes()),
-            &jwt_validation(&state.config),
-        )
-        .map_err(|_| ApiError::Unauthorized("Invalid or expired bearer token.".to_string()))?
-        .claims;
-
-        Ok(AuthUser {
-            id: claims.sub,
-            plan: claims.plan.unwrap_or(UserPlan::Free),
-        })
+        auth::authenticate_bearer_token(token, &state.config.jwt, &state.config.user_directory)
+            .map_err(|error| ApiError::Unauthorized(error.user_message().to_string()))
     }
 }
 
@@ -531,37 +496,6 @@ fn required_env(key: &str) -> Result<String, ApiError> {
         .ok_or_else(|| ApiError::Internal(format!("Missing required environment variable: {key}")))
 }
 
-fn required_secret_env(key: &str) -> Result<String, ApiError> {
-    let value = required_env(key)?;
-    validate_jwt_secret(key, &value)?;
-    Ok(value)
-}
-
-fn validate_jwt_secret(key: &str, value: &str) -> Result<(), ApiError> {
-    let normalized = value.trim().to_ascii_lowercase();
-    let weak_placeholders = [
-        "replace_with_a_long_random_secret",
-        "change_me",
-        "changeme",
-        "secret",
-        "password",
-    ];
-
-    if value.len() < MIN_JWT_SECRET_BYTES {
-        return Err(ApiError::Internal(format!(
-            "{key} must be at least {MIN_JWT_SECRET_BYTES} bytes long."
-        )));
-    }
-
-    if weak_placeholders.contains(&normalized.as_str()) || normalized.starts_with("replace_") {
-        return Err(ApiError::Internal(format!(
-            "{key} is still set to an unsafe placeholder value."
-        )));
-    }
-
-    Ok(())
-}
-
 fn read_optional_env(key: &str) -> Option<String> {
     std::env::var(key)
         .ok()
@@ -575,26 +509,6 @@ fn read_env_or_default(key: &str, default: &str) -> String {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| default.to_string())
-}
-
-fn jwt_validation(config: &AppConfig) -> Validation {
-    let mut validation = Validation::new(Algorithm::HS256);
-
-    if let Some(issuer) = &config.jwt_issuer {
-        validation.set_issuer(&[issuer]);
-        validation.set_required_spec_claims(&["exp", "iss"]);
-    }
-
-    if let Some(audience) = &config.jwt_audience {
-        validation.set_audience(&[audience]);
-        validation.set_required_spec_claims(if config.jwt_issuer.is_some() {
-            &["exp", "iss", "aud"]
-        } else {
-            &["exp", "aud"]
-        });
-    }
-
-    validation
 }
 
 fn init_tracing() {
@@ -637,9 +551,13 @@ mod tests {
             client: reqwest::Client::new(),
             config: Arc::new(AppConfig {
                 bind_addr: DEFAULT_BIND_ADDR.parse().expect("valid bind addr"),
-                jwt_secret: "test-secret-with-at-least-32-characters".to_string(),
-                jwt_issuer: None,
-                jwt_audience: None,
+                jwt: JwtConfig {
+                    secret: "test-secret-with-at-least-32-characters".to_string(),
+                    issuer: None,
+                    audience: None,
+                },
+                user_directory: UserDirectory::from_static_users("user-1:free")
+                    .expect("valid static users"),
                 gemini_api_key: "test-api-key".to_string(),
                 gemini_model: DEFAULT_GEMINI_MODEL.to_string(),
                 gemini_api_version: DEFAULT_GEMINI_API_VERSION.to_string(),
