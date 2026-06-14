@@ -26,17 +26,33 @@ const APP_SETTINGS_FILE_NAME: &str = "instant-settings.json";
 const APP_MODE_ENV: &str = "INSTANT_APP_MODE";
 const CONTEXT_CAPTURED_EVENT: &str = "context-captured";
 const REMOTE_ASK_PATH: &str = "/v1/ai/ask";
+const REMOTE_AUTH_ME_PATH: &str = "/v1/auth/me";
 const OVERLAY_TOPMOST_RELEASE_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
 #[cfg(target_os = "windows")]
-const SELECTED_TEXT_COPY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1800);
+fn selected_text_copy_timeout() -> std::time::Duration {
+    std::env::var("INSTANT_SELECTED_TEXT_COPY_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(std::time::Duration::from_millis)
+        .unwrap_or(std::time::Duration::from_millis(3000))
+}
+
 #[cfg(target_os = "windows")]
 const SELECTED_TEXT_COPY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
 #[cfg(target_os = "windows")]
 const SHORTCUT_RELEASE_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
 #[cfg(target_os = "windows")]
 const SELECTED_TEXT_COPY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(180);
+
 #[cfg(target_os = "windows")]
-const SHORTCUT_KEYS_RELEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(900);
+fn shortcut_keys_release_timeout() -> std::time::Duration {
+    std::env::var("INSTANT_SHORTCUT_KEYS_RELEASE_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(std::time::Duration::from_millis)
+        .unwrap_or(std::time::Duration::from_millis(1200))
+}
+
 #[cfg(target_os = "windows")]
 const SHORTCUT_KEYS_RELEASE_POLL_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(20);
@@ -162,6 +178,14 @@ struct RemoteAskResponse {
 }
 
 #[derive(serde::Deserialize)]
+struct RemoteAuthSessionResponse {
+    user_id: String,
+    plan: String,
+    daily_request_limit: u32,
+    remaining_requests_today: u32,
+}
+
+#[derive(serde::Deserialize)]
 struct RemoteErrorResponse {
     error: Option<String>,
 }
@@ -180,6 +204,80 @@ struct ShortcutSettings {
     shortcut_label: String,
     default_shortcut: String,
     default_shortcut_label: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthValidationResponse {
+    status: &'static str,
+    authenticated: bool,
+    user_id: Option<String>,
+    plan: Option<String>,
+    daily_request_limit: Option<u32>,
+    remaining_requests_today: Option<u32>,
+    message: String,
+}
+
+impl AuthValidationResponse {
+    fn valid(session: RemoteAuthSessionResponse) -> Self {
+        Self {
+            status: "valid",
+            authenticated: true,
+            user_id: Some(session.user_id),
+            plan: Some(session.plan),
+            daily_request_limit: Some(session.daily_request_limit),
+            remaining_requests_today: Some(session.remaining_requests_today),
+            message: "Login session verified.".to_string(),
+        }
+    }
+
+    fn missing_backend() -> Self {
+        Self {
+            status: "missing_backend",
+            authenticated: false,
+            user_id: None,
+            plan: None,
+            daily_request_limit: None,
+            remaining_requests_today: None,
+            message: "Login token is saved, but no backend API URL is configured.".to_string(),
+        }
+    }
+
+    fn missing_token() -> Self {
+        Self {
+            status: "missing_token",
+            authenticated: false,
+            user_id: None,
+            plan: None,
+            daily_request_limit: None,
+            remaining_requests_today: None,
+            message: "No login session is connected.".to_string(),
+        }
+    }
+
+    fn invalid(message: String) -> Self {
+        Self {
+            status: "invalid",
+            authenticated: false,
+            user_id: None,
+            plan: None,
+            daily_request_limit: None,
+            remaining_requests_today: None,
+            message,
+        }
+    }
+
+    fn unavailable(message: String) -> Self {
+        Self {
+            status: "unavailable",
+            authenticated: false,
+            user_id: None,
+            plan: None,
+            daily_request_limit: None,
+            remaining_requests_today: None,
+            message,
+        }
+    }
 }
 
 #[derive(Default, serde::Deserialize, serde::Serialize)]
@@ -334,6 +432,22 @@ async fn fetch_ai_response(
     fetch_local_gemini_response(&state.client, &app, prompt_context).await
 }
 
+#[tauri::command]
+async fn validate_auth_session(
+    app: AppHandle,
+    state: tauri::State<'_, AiState>,
+) -> Result<AuthValidationResponse, String> {
+    match resolve_backend_config(&app)? {
+        BackendConfigResolution::Configured(backend_config) => {
+            Ok(fetch_remote_auth_session(&state.client, &backend_config).await)
+        }
+        BackendConfigResolution::MissingApiUrl => Ok(AuthValidationResponse::missing_backend()),
+        BackendConfigResolution::MissingAuthToken | BackendConfigResolution::LocalMode => {
+            Ok(AuthValidationResponse::missing_token())
+        }
+    }
+}
+
 async fn fetch_remote_ai_response(
     client: &reqwest::Client,
     backend_config: &BackendConfig,
@@ -379,6 +493,61 @@ async fn fetch_remote_ai_response(
                 Ok(text)
             }
         })
+}
+
+async fn fetch_remote_auth_session(
+    client: &reqwest::Client,
+    backend_config: &BackendConfig,
+) -> AuthValidationResponse {
+    let response = match client
+        .get(remote_auth_me_url(&backend_config.api_url))
+        .bearer_auth(&backend_config.auth_token)
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            return AuthValidationResponse::unavailable(upstream_request_error(
+                INSTANT_BACKEND_SERVICE_NAME,
+                &error,
+            ));
+        }
+    };
+
+    let status = response.status();
+
+    if !status.is_success() {
+        let detail = response.text().await.unwrap_or_default();
+        let message =
+            parse_remote_error(&detail).unwrap_or_else(|| truncate_error_detail(detail.trim()));
+
+        if matches!(status.as_u16(), 401 | 403) {
+            return AuthValidationResponse::invalid(if message.is_empty() {
+                "Login session is invalid or expired.".to_string()
+            } else {
+                message
+            });
+        }
+
+        let suffix = if message.is_empty() {
+            String::new()
+        } else {
+            format!(" {message}")
+        };
+
+        return AuthValidationResponse::unavailable(format!(
+            "Instant backend session check failed with HTTP {}.{}",
+            status.as_u16(),
+            suffix
+        ));
+    }
+
+    match response.json::<RemoteAuthSessionResponse>().await {
+        Ok(session) => AuthValidationResponse::valid(session),
+        Err(error) => AuthValidationResponse::unavailable(format!(
+            "Failed to parse Instant backend session response: {error}"
+        )),
+    }
 }
 
 async fn fetch_local_gemini_response(
@@ -535,6 +704,10 @@ fn resolve_backend_config(app: &AppHandle) -> Result<BackendConfigResolution, St
 
 fn remote_ask_url(api_url: &str) -> String {
     format!("{}{}", api_url.trim_end_matches('/'), REMOTE_ASK_PATH)
+}
+
+fn remote_auth_me_url(api_url: &str) -> String {
+    format!("{}{}", api_url.trim_end_matches('/'), REMOTE_AUTH_ME_PATH)
 }
 
 fn parse_remote_error(detail: &str) -> Option<String> {
@@ -1528,8 +1701,7 @@ fn wait_for_shortcut_keys_released() -> bool {
     };
 
     let started_at = std::time::Instant::now();
-
-    while started_at.elapsed() < SHORTCUT_KEYS_RELEASE_TIMEOUT {
+    while started_at.elapsed() < shortcut_keys_release_timeout() {
         if !virtual_key_is_down(VK_CONTROL)
             && !virtual_key_is_down(VK_MENU)
             && !virtual_key_is_down(VK_SHIFT)
@@ -1537,9 +1709,13 @@ fn wait_for_shortcut_keys_released() -> bool {
         {
             return true;
         }
-
         std::thread::sleep(SHORTCUT_KEYS_RELEASE_POLL_INTERVAL);
     }
+
+    log::warn!(
+        "Shortcut keys did not release within {:?}; skipping selected-text capture.",
+        shortcut_keys_release_timeout()
+    );
 
     false
 }
@@ -1740,7 +1916,7 @@ fn wait_for_copied_text(sequence_before: u32) -> Option<Result<String, String>> 
     let mut clipboard_changed = false;
     let mut last_read_error = None;
 
-    while started_at.elapsed() < SELECTED_TEXT_COPY_TIMEOUT {
+    while started_at.elapsed() < selected_text_copy_timeout() {
         clipboard_changed = clipboard_changed || clipboard_sequence_number() != sequence_before;
 
         if clipboard_changed {
@@ -1758,6 +1934,10 @@ fn wait_for_copied_text(sequence_before: u32) -> Option<Result<String, String>> 
             "Selected content was copied, but it did not contain readable text.".to_string()
         })))
     } else {
+        log::warn!(
+            "Selected-text copy did not complete within {:?}ms.",
+            selected_text_copy_timeout()
+        );
         None
     }
 }
@@ -1940,7 +2120,8 @@ pub fn run() {
             fetch_ai_response,
             save_auth_session,
             save_shortcut_settings,
-            toggle_overlay
+            toggle_overlay,
+            validate_auth_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -2042,5 +2223,32 @@ mod tests {
         assert!(normalize_shortcut_input("ctrl+alt").is_err());
         assert!(normalize_shortcut_input("win+alt+space").is_err());
         assert!(normalize_shortcut_input("ctrl+alt+space+x").is_err());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn selected_text_timeouts_are_configurable() {
+        // Ensure defaults
+        std::env::remove_var("INSTANT_SELECTED_TEXT_COPY_TIMEOUT_MS");
+        std::env::remove_var("INSTANT_SHORTCUT_KEYS_RELEASE_TIMEOUT_MS");
+
+        assert_eq!(selected_text_copy_timeout(), std::time::Duration::from_millis(3000));
+        assert_eq!(shortcut_keys_release_timeout(), std::time::Duration::from_millis(1200));
+
+        std::env::set_var("INSTANT_SELECTED_TEXT_COPY_TIMEOUT_MS", "1500");
+        std::env::set_var("INSTANT_SHORTCUT_KEYS_RELEASE_TIMEOUT_MS", "900");
+
+        assert_eq!(selected_text_copy_timeout(), std::time::Duration::from_millis(1500));
+        assert_eq!(shortcut_keys_release_timeout(), std::time::Duration::from_millis(900));
+
+        std::env::remove_var("INSTANT_SELECTED_TEXT_COPY_TIMEOUT_MS");
+        std::env::remove_var("INSTANT_SHORTCUT_KEYS_RELEASE_TIMEOUT_MS");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn non_windows_placeholder_test() {
+        // Windows-specific clipboard tests are skipped on non-Windows platforms.
+        assert!(true);
     }
 }
